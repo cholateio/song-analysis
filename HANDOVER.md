@@ -36,7 +36,8 @@ YouTube URL
 
 | column         | type           | nullable | notes |
 |---             |---             |---       |---|
-| `video_id`     | `text`         | PK       | YouTube 11-char ID |
+| `id`           | `bigint`       | PK       | auto-generated identity, `GENERATED ALWAYS AS IDENTITY`. Use this when another project needs an int foreign key. |
+| `video_id`     | `text`         | UNIQUE   | YouTube 11-char ID. Still the natural key for upserts and lookups. |
 | `title`        | `text`         | no       | from yt-dlp |
 | `artist`       | `text`         | yes      | channel / uploader |
 | `release_date` | `date`         | yes      | ISO `YYYY-MM-DD`, from yt-dlp's `release_date` falling back to `upload_date` |
@@ -45,6 +46,11 @@ YouTube URL
 | `analysis`     | `jsonb`        | no       | array of per-frame objects |
 | `created_at`   | `timestamptz`  | no       | row created |
 | `updated_at`   | `timestamptz`  | no       | bumped on every upsert |
+
+**When to use `id` vs `video_id`:**
+- Use `id` for foreign keys from other tables/projects (e.g., `FOREIGN KEY (song_id) REFERENCES "Songs"(id)`).
+- Use `video_id` for lookups where you already have a YouTube URL or ID — it's indexed as `UNIQUE`, so `WHERE video_id = '…'` is equally fast.
+- `id` is assigned by the database on insert and never changes; `video_id` is stable as long as the YouTube video exists.
 
 The schema DDL lives in [supabase-schema.sql](supabase-schema.sql) in this repo.
 
@@ -142,8 +148,18 @@ const supabase = createClient(
 async function loadSong(videoId) {
   const { data, error } = await supabase
     .from('Songs')
-    .select('video_id, title, artist, release_date, metadata, lyrics, analysis')
+    .select('id, video_id, title, artist, release_date, metadata, lyrics, analysis')
     .eq('video_id', videoId)
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function loadSongById(id) {
+  const { data, error } = await supabase
+    .from('Songs')
+    .select('id, video_id, title, artist, release_date, metadata, lyrics, analysis')
+    .eq('id', id)
     .single();
   if (error) throw error;
   return data;
@@ -236,14 +252,14 @@ function bassToHsl(b) {
 
 ```sql
 -- Listing view: lightweight columns only
-SELECT video_id, title, artist, release_date
+SELECT id, video_id, title, artist, release_date
 FROM "Songs"
 ORDER BY updated_at DESC;
 
--- Full payload for the player
-SELECT video_id, title, artist, release_date, metadata, lyrics, analysis
+-- Full payload for the player (either key works)
+SELECT id, video_id, title, artist, release_date, metadata, lyrics, analysis
 FROM "Songs"
-WHERE video_id = '3Dr91z1-Iug';
+WHERE video_id = '3Dr91z1-Iug';   -- or  WHERE id = 42
 
 -- Quick sanity check: how many frames vs expected
 SELECT video_id,

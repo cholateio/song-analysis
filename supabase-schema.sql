@@ -1,8 +1,12 @@
 -- Run once in the Supabase SQL editor (or via CLI) to create the Songs table.
 -- Note: the table name is capitalized, so every query must quote it: FROM "Songs"
+--
+-- If you already created this table with the older schema (video_id as PK),
+-- run supabase-migration-add-id.sql instead to add the id column in place.
 
 create table if not exists "Songs" (
-  video_id      text        primary key,
+  id            bigint      generated always as identity primary key,
+  video_id      text        not null unique,
   title         text        not null,
   artist        text,
   release_date  date,
