@@ -5,7 +5,7 @@
 -- run supabase-migration-add-id.sql instead to add the id column in place.
 
 create table if not exists "Songs" (
-  id            bigint      generated always as identity primary key,
+  id            uuid primary key default gen_random_uuid(),
   video_id      text        not null unique,
   title         text        not null,
   artist        text,

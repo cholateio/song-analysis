@@ -36,7 +36,7 @@ YouTube URL
 
 | column         | type           | nullable | notes |
 |---             |---             |---       |---|
-| `id`           | `bigint`       | PK       | auto-generated identity, `GENERATED ALWAYS AS IDENTITY`. Use this when another project needs an int foreign key. |
+| `id`           | `uuid`       | PK       | auto-generated identity, `GENERATED ALWAYS AS IDENTITY`. Use this when another project needs an int foreign key. |
 | `video_id`     | `text`         | UNIQUE   | YouTube 11-char ID. Still the natural key for upserts and lookups. |
 | `title`        | `text`         | no       | from yt-dlp |
 | `artist`       | `text`         | yes      | channel / uploader |
