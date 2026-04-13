@@ -1,0 +1,21 @@
+{
+  "name": "song-analysis",
+  "version": "0.1.0",
+  "description": "YouTube music ingestion + audio analysis pipeline. Produces per-frame spectrum + lyrics data in Supabase for a Three.js visualizer.",
+  "type": "module",
+  "bin": {
+    "analyze-song": "./analyzer.mjs"
+  },
+  "scripts": {
+    "analyze": "node analyzer.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "dotenv": "^16.4.5",
+    "meyda": "^5.6.3",
+    "minimist": "^1.2.8"
+  }
+}
