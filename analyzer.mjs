@@ -122,7 +122,7 @@ async function main() {
     log(`  Official (human-uploaded): ${sources.official.length ? sources.official.join(', ') : '(none)'}`);
     log(`  Auto-transcribed in original language: ${sources.autoOrig.length ? sources.autoOrig.map(l => `${l}-orig`).join(', ') : '(none)'}`);
     log('');
-    log(`The analyzer only uses "Official" tracks matching --lang exactly. Auto-transcribed`);
+    log(`The analyzer only uses "Official" tracks matching --langs exactly. Auto-transcribed`);
     log(`tracks are shown for reference but are never used (quality is too poor for lyrics).`);
     return;
   }
