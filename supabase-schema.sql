@@ -11,7 +11,8 @@ create table if not exists "Songs" (
   artist        text,
   release_date  date,
   metadata      jsonb       not null,
-  lyrics        jsonb,
+  lyrics_jp     jsonb,
+  lyrics_tw     jsonb,
   analysis      jsonb       not null,
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now()

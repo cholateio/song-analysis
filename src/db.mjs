@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const TABLE = 'KAF';
+const TABLE = 'Songs';
 
 let client = null;
 
@@ -31,14 +31,15 @@ export async function exists(videoId) {
 export async function upsertSong(row) {
   const db = getClient();
   const payload = {
-    video_id: row.videoId,
-    title: row.title,
-    artist: row.artist,
+    video_id:     row.videoId,
+    title:        row.title,
+    artist:       row.artist,
     release_date: row.releaseDate,
-    metadata: row.metadata,
-    lyrics: row.lyrics,
-    analysis: row.analysis,
-    updated_at: new Date().toISOString(),
+    metadata:     row.metadata,
+    lyrics_jp:    row.lyricsJp,
+    lyrics_tw:    row.lyricsTw,
+    analysis:     row.analysis,
+    updated_at:   new Date().toISOString(),
   };
   const { error } = await db.from(TABLE).upsert(payload, { onConflict: 'video_id' });
   if (error) throw new Error(`supabase upsert failed: ${error.message}`);

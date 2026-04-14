@@ -82,37 +82,37 @@ export async function fetchMetadata(videoId) {
   };
 }
 
-export async function fetchCaptions(info, langs) {
-  const results = await Promise.all(
-    langs.map(async (lang) => {
-      const tracks = info.subtitles?.[lang];
-      if (!Array.isArray(tracks)) return { lang, cues: null };
-      const track = tracks.find(t => t.ext === 'vtt');
-      if (!track) return { lang, cues: null };
-      try {
-        const res = await fetch(track.url);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const vtt = await res.text();
-        const cues = parseVtt(vtt);
-        return { lang, cues };
-      } catch (err) {
-        return { lang, cues: null, error: err.message };
-      }
-    })
-  );
-
-  const cuesByLang = {};
-  const sources = [];
-  const errors = [];
-  for (const r of results) {
-    if (r.cues && r.cues.length > 0) {
-      cuesByLang[r.lang] = r.cues;
-      sources.push(`official:${r.lang}`);
-    } else if (r.error) {
-      errors.push(`${r.lang}: ${r.error}`);
+export async function fetchCaptions(info) {
+  const fetchOne = async (lang) => {
+    const tracks = info.subtitles?.[lang];
+    if (!Array.isArray(tracks)) return { cues: null };
+    const track = tracks.find(t => t.ext === 'vtt');
+    if (!track) return { cues: null };
+    try {
+      const res = await fetch(track.url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const vtt = await res.text();
+      const cues = parseVtt(vtt);
+      return { cues: cues.length > 0 ? cues : null };
+    } catch (err) {
+      return { cues: null, error: `${lang}: ${err.message}` };
     }
-  }
-  return { cuesByLang, sources, errors };
+  };
+
+  const [jaResult, twResult] = await Promise.all([
+    fetchOne('ja'),
+    fetchOne('zh-TW'),
+  ]);
+
+  const errors = [];
+  if (jaResult.error) errors.push(jaResult.error);
+  if (twResult.error) errors.push(twResult.error);
+
+  return {
+    jp: jaResult.cues,
+    tw: twResult.cues,
+    errors,
+  };
 }
 
 export function listCaptionSources(info) {
