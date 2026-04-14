@@ -9,13 +9,16 @@ import { exists, upsertSong } from './src/db.mjs';
 
 const MAX_DURATION_SEC = 12 * 60;
 
-const USAGE = `Usage: node analyzer.mjs --url "<youtube-url-or-id>" [--lang ja] [--force] [--dry-run] [--list-captions]
+const USAGE = `Usage: node analyzer.mjs --url "<youtube-url-or-id>" [--langs ja,zh-TW] [--force] [--dry-run] [--list-captions]
 
 Flags
   --url            YouTube URL in any form, or a raw 11-char video ID  (required)
-  --lang           Caption language, default "ja". Only official (human-uploaded) subtitles
-                   in this exact language are accepted. If the video has no official track
-                   in this language, lyrics will be null (analysis is still saved).
+  --langs          Comma-separated caption languages to try, default "ja,zh-TW".
+                   Only official (human-uploaded) subtitle tracks matching these
+                   BCP-47 tags exactly are accepted. Each language found is stored
+                   under its tag in the lyrics JSON (e.g. {"ja": [...], "zh-TW": [...]}).
+                   If none of the requested languages has an official track, lyrics
+                   will be null (analysis is still saved).
   --force          Reprocess even if video_id already exists in "Songs"
   --dry-run        Run the full pipeline, skip the Supabase upsert
   --list-captions  Print available caption sources for this video and exit
@@ -75,9 +78,9 @@ function makeProgressReporter(duration) {
 
 async function main() {
   const argv = minimist(process.argv.slice(2), {
-    string: ['url', 'lang'],
+    string: ['url', 'langs'],
     boolean: ['force', 'dry-run', 'help', 'list-captions'],
-    default: { lang: 'ja' },
+    default: { langs: 'ja,zh-TW' },
     alias: { h: 'help' },
   });
 
@@ -87,6 +90,12 @@ async function main() {
   }
 
   if (!argv.url) fail(`missing --url\n\n${USAGE}`);
+
+  const langs = String(argv.langs)
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  if (langs.length === 0) fail(`--langs must contain at least one language\n\n${USAGE}`);
 
   const videoId = parseVideoId(argv.url);
   if (!videoId) fail(`could not extract a YouTube video ID from: ${argv.url}`);
@@ -123,19 +132,22 @@ async function main() {
     fail(`duration ${info.duration}s exceeds hard cap of ${MAX_DURATION_SEC}s (12 min). Edit MAX_DURATION_SEC to override.`);
   }
 
-  let cues = null;
-  let captionSource = 'none';
+  let cuesByLang = {};
   try {
-    const result = await fetchCaptions(info, argv.lang);
-    cues = result.cues;
-    captionSource = result.source;
+    const result = await fetchCaptions(info, langs);
+    cuesByLang = result.cuesByLang;
+    for (const errMsg of result.errors) {
+      logWarn(`captions: ${errMsg}`);
+    }
   } catch (err) {
     logWarn(`captions: fetch failed (${err.message}), continuing without lyrics`);
   }
-  if (cues) {
-    logOk(`captions: ${captionSource} (${cues.length} cues)`);
+  const foundLangs = Object.keys(cuesByLang);
+  if (foundLangs.length > 0) {
+    const parts = foundLangs.map(l => `${l} (${cuesByLang[l].length} cues)`);
+    logOk(`captions: ${parts.join(', ')}`);
   } else {
-    logWarn(`captions: no official '${argv.lang}' track; lyrics will be null`);
+    logWarn(`captions: no official tracks in ${langs.join(',')}; lyrics will be null`);
   }
 
   const { pcmStream, done } = spawnAudioPipeline(videoId);
@@ -164,7 +176,7 @@ async function main() {
       highRange:  [AGGREGATE_RANGES.high.lo,  AGGREGATE_RANGES.high.hi],
       vocalRange: [AGGREGATE_RANGES.vocal.lo, AGGREGATE_RANGES.vocal.hi],
     },
-    lyrics: cues,
+    lyrics: foundLangs.length > 0 ? cuesByLang : null,
     analysis: analysis.frames,
   };
 

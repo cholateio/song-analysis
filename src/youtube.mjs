@@ -82,16 +82,37 @@ export async function fetchMetadata(videoId) {
   };
 }
 
-export async function fetchCaptions(info, preferredLang) {
-  const tracks = info.subtitles?.[preferredLang];
-  if (!Array.isArray(tracks)) return { cues: null, source: 'none' };
-  const track = tracks.find(t => t.ext === 'vtt');
-  if (!track) return { cues: null, source: 'none' };
+export async function fetchCaptions(info, langs) {
+  const results = await Promise.all(
+    langs.map(async (lang) => {
+      const tracks = info.subtitles?.[lang];
+      if (!Array.isArray(tracks)) return { lang, cues: null };
+      const track = tracks.find(t => t.ext === 'vtt');
+      if (!track) return { lang, cues: null };
+      try {
+        const res = await fetch(track.url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const vtt = await res.text();
+        const cues = parseVtt(vtt);
+        return { lang, cues };
+      } catch (err) {
+        return { lang, cues: null, error: err.message };
+      }
+    })
+  );
 
-  const res = await fetch(track.url);
-  if (!res.ok) throw new Error(`caption fetch failed: HTTP ${res.status}`);
-  const vtt = await res.text();
-  return { cues: parseVtt(vtt), source: `official:${preferredLang}` };
+  const cuesByLang = {};
+  const sources = [];
+  const errors = [];
+  for (const r of results) {
+    if (r.cues && r.cues.length > 0) {
+      cuesByLang[r.lang] = r.cues;
+      sources.push(`official:${r.lang}`);
+    } else if (r.error) {
+      errors.push(`${r.lang}: ${r.error}`);
+    }
+  }
+  return { cuesByLang, sources, errors };
 }
 
 export function listCaptionSources(info) {
