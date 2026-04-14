@@ -1,173 +1,209 @@
-# Multi-language Lyrics Implementation Plan
+# Multi-language Lyrics Implementation Plan (v2: two columns)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Store YouTube lyrics keyed by language (`ja`, `zh-TW`, …) so the frontend can switch languages without re-ingesting, while keeping `ja` as the fallback default.
+**Goal:** Replace the single keyed `lyrics` JSONB column with two dedicated columns `lyrics_jp` and `lyrics_tw`. The analyzer always attempts both `ja` and `zh-TW` and writes whichever were found; each column is independently nullable. The `--langs` flag from the v1 design is removed.
 
-**Architecture:** `fetchCaptions` changes from single-lang to a parallel multi-lang fetch that returns `{cuesByLang, sources, errors}`. The analyzer's `--lang` flag is replaced by `--langs` (CSV, default `ja,zh-TW`). `row.lyrics` becomes an object keyed by BCP-47 language tag, or `null` when nothing was found. Only human-uploaded official captions are used — auto-captions are still ignored.
+**Architecture:** `fetchCaptions(info)` drops its `langs` parameter and always returns `{jp, tw, errors}`. `src/db.mjs` maps new row fields `lyricsJp` and `lyricsTw` to the new columns (and also absorbs a pre-existing uncommitted `TABLE` rename `'KAF'` → `'Songs'`). `analyzer.mjs` drops all `--langs` handling and populates the new row fields. `supabase-schema.sql` is updated to reflect the new DDL.
 
-**Tech Stack:** Node 20, `minimist` CLI parsing, `@supabase/supabase-js`, existing `parseVtt` utility, Supabase `jsonb` column (no schema migration needed).
+**Tech Stack:** Node 20, `minimist`, `@supabase/supabase-js`, Supabase `jsonb` columns (schema migration is operator-run, not scripted).
 
-**Testing posture:** This repo has no unit test framework and the spec explicitly calls for manual verification instead. Every code task ends with a manual end-to-end run against real YouTube URLs; do not add Jest/Vitest/etc.
+**Testing posture:** Repo has no test framework. Spec mandates manual end-to-end verification against real YouTube URLs. Do not add Jest/Vitest. Do not write unit test files.
+
+**Prerequisite:** Operator must drop and recreate the `"Songs"` table with the new DDL before running verification. This is called out in Task 5.
 
 ---
 
 ## File Structure
 
-- **Modify** `src/youtube.mjs` — `fetchCaptions(info, langs)` new signature, parallel per-language fetch, per-language error isolation. `parseVtt`, `listCaptionSources`, and the audio pipeline are untouched.
-- **Modify** `analyzer.mjs` — `--langs` flag wiring, log output, `row.lyrics` assignment. `preflight`, `makeProgressReporter`, and audio analysis are untouched.
-- **No changes** to `src/db.mjs`, `src/audio.mjs`, `supabase-schema.sql`, or `package.json`.
+- **Modify** `supabase-schema.sql` — replace `lyrics jsonb,` with `lyrics_jp jsonb,\n  lyrics_tw jsonb,`. Nothing else in the DDL changes.
+- **Modify** `src/db.mjs` — includes the already-pending `TABLE` constant rename (`'KAF'` → `'Songs'`) plus new column mappings in `upsertSong`.
+- **Modify** `src/youtube.mjs` — `fetchCaptions(info)` returns `{jp, tw, errors}`. Only this function changes.
+- **Modify** `analyzer.mjs` — remove `--langs` everywhere; new captions block; new row field names.
+- **No changes** to `src/audio.mjs`, `package.json`, `analyzer.mjs`'s audio pipeline, or anything in `virtual-clock-example/`.
 
-Note the repo currently has uncommitted changes in `src/db.mjs` per `git status`. **Do not touch `src/db.mjs`** as part of this plan — those changes are unrelated.
-
----
-
-## Task 1: Wipe the existing `Songs` table
-
-**Why first:** The storage shape for `lyrics` is changing from an array to an object. Any pre-existing rows carry the old shape; the spec decided (option D during brainstorming) to wipe rather than migrate. Doing this before the code change keeps the database and code in sync at every step.
-
-**Files:** none (operator action in Supabase SQL editor)
-
-- [ ] **Step 1: Run the truncate in the Supabase SQL editor**
-
-Open the Supabase project → SQL editor, paste and run:
-
-```sql
-truncate table "Songs";
-```
-
-Expected: "Success. No rows returned."
-
-- [ ] **Step 2: Verify the table is empty**
-
-In the same SQL editor:
-
-```sql
-select count(*) from "Songs";
-```
-
-Expected: `count = 0`.
-
-No git commit — this task touches no files.
+Starting state of the branch (before this task):
+- Branch: `feat/multilang-lyrics`
+- HEAD: `7badb38 fix: update --list-captions text to --langs`
+- Working tree: `src/db.mjs` has one unstaged change (`KAF` → `Songs`), which this plan intentionally absorbs into the new commit.
 
 ---
 
-## Task 2: Update `fetchCaptions` to accept a list of languages
+## Task 1: Update `supabase-schema.sql` for the two-column DDL
 
 **Files:**
-- Modify: `src/youtube.mjs` (current `fetchCaptions` at lines 85–95)
+- Modify: `supabase-schema.sql`
 
-- [ ] **Step 1: Replace the body of `fetchCaptions` with a parallel multi-lang version**
+- [ ] **Step 1: Replace the `lyrics` column with two columns**
 
-Open `src/youtube.mjs` and replace the existing `fetchCaptions` function (currently starting with `export async function fetchCaptions(info, preferredLang)`) with this:
+Open `supabase-schema.sql` and change the column list inside `create table if not exists "Songs" (...)`. Replace:
 
-```js
-export async function fetchCaptions(info, langs) {
-  const results = await Promise.all(
-    langs.map(async (lang) => {
-      const tracks = info.subtitles?.[lang];
-      if (!Array.isArray(tracks)) return { lang, cues: null };
-      const track = tracks.find(t => t.ext === 'vtt');
-      if (!track) return { lang, cues: null };
-      try {
-        const res = await fetch(track.url);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const vtt = await res.text();
-        const cues = parseVtt(vtt);
-        return { lang, cues };
-      } catch (err) {
-        return { lang, cues: null, error: err.message };
-      }
-    })
-  );
-
-  const cuesByLang = {};
-  const sources = [];
-  const errors = [];
-  for (const r of results) {
-    if (r.cues && r.cues.length > 0) {
-      cuesByLang[r.lang] = r.cues;
-      sources.push(`official:${r.lang}`);
-    } else if (r.error) {
-      errors.push(`${r.lang}: ${r.error}`);
-    }
-  }
-  return { cuesByLang, sources, errors };
-}
+```sql
+  metadata      jsonb       not null,
+  lyrics        jsonb,
+  analysis      jsonb       not null,
 ```
 
-Key behaviors to double-check after editing:
-- The function now takes an **array** `langs`, not a single string.
-- Per-language fetch failures go into `errors`; they do **not** throw — the caller decides how loud to be.
-- A language with zero parsed cues is treated as "not found" (same as the old code treating `parseVtt` returning `[]` as content-less).
-- Automatic captions are still never consulted; only `info.subtitles[lang]` is read.
+with:
 
-- [ ] **Step 2: Sanity-check imports and sibling exports**
-
-Scan the rest of `src/youtube.mjs` and confirm:
-- `parseVtt` is still exported (unchanged) and is what `fetchCaptions` calls.
-- `listCaptionSources` is still exported and unchanged.
-- No other file in the repo imports `fetchCaptions` except `analyzer.mjs` (Task 3 updates that caller).
-
-Run:
-
-```bash
-grep -rn "fetchCaptions" src analyzer.mjs
+```sql
+  metadata      jsonb       not null,
+  lyrics_jp     jsonb,
+  lyrics_tw     jsonb,
+  analysis      jsonb       not null,
 ```
 
-Expected: two hits — the definition in `src/youtube.mjs` and the call site in `analyzer.mjs` that we'll fix in Task 3.
+Do not touch any other line of the file. The header comment, the `id` column, the unique constraint on `video_id`, the index on `updated_at`, and every other column must stay exactly as they were.
+
+- [ ] **Step 2: Sanity-check**
+
+Run: `grep -n "lyrics" supabase-schema.sql`
+Expected: two hits, one for `lyrics_jp` and one for `lyrics_tw`. No bare `lyrics jsonb` line should remain.
 
 - [ ] **Step 3: Do not commit yet**
 
-We will commit Tasks 2 and 3 together, because `analyzer.mjs` still calls the old single-lang signature. Committing now would leave `main` in a broken state.
+All four files in this plan ship in a single atomic commit at the end of Task 4.
 
 ---
 
-## Task 3: Rewire `analyzer.mjs` for `--langs` and keyed lyrics
+## Task 2: Simplify `fetchCaptions` in `src/youtube.mjs`
 
 **Files:**
-- Modify: `analyzer.mjs` (USAGE string around lines 12–23, `minimist` call around lines 77–82, captions block around lines 126–139, row construction around lines 150–169)
+- Modify: `src/youtube.mjs` (current `fetchCaptions` starts around line 85)
+
+- [ ] **Step 1: Replace `fetchCaptions` with the two-language version**
+
+In `src/youtube.mjs`, locate the current `export async function fetchCaptions(info, langs) { ... }` (the v1 multi-lang version) and replace the **entire function** with:
+
+```js
+export async function fetchCaptions(info) {
+  const fetchOne = async (lang) => {
+    const tracks = info.subtitles?.[lang];
+    if (!Array.isArray(tracks)) return { cues: null };
+    const track = tracks.find(t => t.ext === 'vtt');
+    if (!track) return { cues: null };
+    try {
+      const res = await fetch(track.url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const vtt = await res.text();
+      const cues = parseVtt(vtt);
+      return { cues: cues.length > 0 ? cues : null };
+    } catch (err) {
+      return { cues: null, error: `${lang}: ${err.message}` };
+    }
+  };
+
+  const [jaResult, twResult] = await Promise.all([
+    fetchOne('ja'),
+    fetchOne('zh-TW'),
+  ]);
+
+  const errors = [];
+  if (jaResult.error) errors.push(jaResult.error);
+  if (twResult.error) errors.push(twResult.error);
+
+  return {
+    jp: jaResult.cues,
+    tw: twResult.cues,
+    errors,
+  };
+}
+```
+
+Do **not** touch `parseVtt`, `listCaptionSources`, `parseVideoId`, `fetchMetadata`, `spawnAudioPipeline`, or any imports.
+
+- [ ] **Step 2: Sanity-check for stale references**
+
+Run: `grep -nE "fetchCaptions\(info, |cuesByLang|foundLangs|\\blangs\\b" src/youtube.mjs`
+Expected: no matches. If any show up inside `fetchCaptions`, fix before moving on.
+
+- [ ] **Step 3: Do not commit yet**
+
+---
+
+## Task 3: Update `src/db.mjs` for the new columns (and absorb the `TABLE` rename)
+
+**Files:**
+- Modify: `src/db.mjs`
+
+- [ ] **Step 1: Confirm the pre-existing `TABLE` rename is in place**
+
+Run: `grep -n "^const TABLE" src/db.mjs`
+Expected: exactly one line showing `const TABLE = 'Songs';`. If it still says `'KAF'`, change it to `'Songs'` now.
+
+- [ ] **Step 2: Replace the `upsertSong` payload**
+
+Locate the current `upsertSong` function and its `payload` object. Replace the `payload` construction so it reads:
+
+```js
+  const payload = {
+    video_id:     row.videoId,
+    title:        row.title,
+    artist:       row.artist,
+    release_date: row.releaseDate,
+    metadata:     row.metadata,
+    lyrics_jp:    row.lyricsJp,
+    lyrics_tw:    row.lyricsTw,
+    analysis:     row.analysis,
+    updated_at:   new Date().toISOString(),
+  };
+```
+
+The only difference vs. the current version is: the single `lyrics: row.lyrics,` line is removed and `lyrics_jp: row.lyricsJp,` + `lyrics_tw: row.lyricsTw,` are inserted in the same position. Everything else — `getClient`, `exists`, the `onConflict` upsert call — stays exactly as-is.
+
+- [ ] **Step 3: Sanity-check**
+
+Run: `grep -nE "\\blyrics\\b" src/db.mjs`
+Expected: no matches. (Both occurrences should now be `lyrics_jp` or `lyrics_tw`; word-boundary `\b` excludes those.)
+
+- [ ] **Step 4: Do not commit yet**
+
+---
+
+## Task 4: Rewire `analyzer.mjs` and commit everything
+
+**Files:**
+- Modify: `analyzer.mjs`
 
 - [ ] **Step 1: Update the `USAGE` string**
 
-Replace the existing `USAGE` constant (currently describing `--lang ja`) with:
+Replace the existing `USAGE` constant with:
 
 ```js
-const USAGE = `Usage: node analyzer.mjs --url "<youtube-url-or-id>" [--langs ja,zh-TW] [--force] [--dry-run] [--list-captions]
+const USAGE = `Usage: node analyzer.mjs --url "<youtube-url-or-id>" [--force] [--dry-run] [--list-captions]
 
 Flags
   --url            YouTube URL in any form, or a raw 11-char video ID  (required)
-  --langs          Comma-separated caption languages to try, default "ja,zh-TW".
-                   Only official (human-uploaded) subtitle tracks matching these
-                   BCP-47 tags exactly are accepted. Each language found is stored
-                   under its tag in the lyrics JSON (e.g. {"ja": [...], "zh-TW": [...]}).
-                   If none of the requested languages has an official track, lyrics
-                   will be null (analysis is still saved).
   --force          Reprocess even if video_id already exists in "Songs"
   --dry-run        Run the full pipeline, skip the Supabase upsert
   --list-captions  Print available caption sources for this video and exit
   --help           Show this message
+
+Captions
+  The analyzer always tries YouTube's official "ja" and "zh-TW" tracks in
+  parallel. Each track found is stored in its own column ("lyrics_jp" and
+  "lyrics_tw"). Auto-transcribed captions are never used. If neither track
+  exists, both columns are left null and audio analysis is still saved.
 `;
 ```
 
 - [ ] **Step 2: Update the `minimist` configuration**
 
-Find the existing `minimist(process.argv.slice(2), { ... })` block and replace it with:
+Replace the existing `minimist(process.argv.slice(2), { ... })` call with:
 
 ```js
   const argv = minimist(process.argv.slice(2), {
-    string: ['url', 'langs'],
+    string: ['url'],
     boolean: ['force', 'dry-run', 'help', 'list-captions'],
-    default: { langs: 'ja,zh-TW' },
     alias: { h: 'help' },
   });
 ```
 
-The `string` array now contains `langs` instead of `lang`, and `default.langs` replaces `default.lang`.
+The `string` array no longer contains `'langs'`, and the `default` object is removed entirely.
 
-- [ ] **Step 3: Parse `--langs` into an array**
+- [ ] **Step 3: Remove the v1 `langs` parsing block**
 
-Immediately after the existing `if (!argv.url) fail(...)` guard near the top of `main`, add:
+Delete the block immediately after `if (!argv.url) fail(...)` that currently reads:
 
 ```js
   const langs = String(argv.langs)
@@ -177,182 +213,191 @@ Immediately after the existing `if (!argv.url) fail(...)` guard near the top of 
   if (langs.length === 0) fail(`--langs must contain at least one language\n\n${USAGE}`);
 ```
 
-- [ ] **Step 4: Rewrite the captions-fetch block**
+Remove all five lines. Nothing replaces them here; the new captions logic is in Step 5.
 
-Replace the current block (the one containing `let cues = null; let captionSource = 'none'; try { const result = await fetchCaptions(info, argv.lang); …`) with:
+- [ ] **Step 4: Update the `--list-captions` explanatory text**
+
+Find the two `log(...)` lines inside the `if (listOnly) { ... }` block that currently read:
 
 ```js
-  let cuesByLang = {};
+    log(`The analyzer only uses "Official" tracks matching --langs exactly. Auto-transcribed`);
+    log(`tracks are shown for reference but are never used (quality is too poor for lyrics).`);
+```
+
+Replace them with:
+
+```js
+    log(`The analyzer only uses "Official" "ja" and "zh-TW" tracks. Auto-transcribed`);
+    log(`tracks are shown for reference but are never used (quality is too poor for lyrics).`);
+```
+
+- [ ] **Step 5: Replace the captions-fetch block**
+
+Find the v1 block (the one containing `let cuesByLang = {}; try { const result = await fetchCaptions(info, langs); …`) and replace it with:
+
+```js
+  let jp = null;
+  let tw = null;
   try {
-    const result = await fetchCaptions(info, langs);
-    cuesByLang = result.cuesByLang;
+    const result = await fetchCaptions(info);
+    jp = result.jp;
+    tw = result.tw;
     for (const errMsg of result.errors) {
       logWarn(`captions: ${errMsg}`);
     }
   } catch (err) {
     logWarn(`captions: fetch failed (${err.message}), continuing without lyrics`);
   }
-  const foundLangs = Object.keys(cuesByLang);
-  if (foundLangs.length > 0) {
-    const parts = foundLangs.map(l => `${l} (${cuesByLang[l].length} cues)`);
-    logOk(`captions: ${parts.join(', ')}`);
+  const found = [];
+  if (jp) found.push(`ja (${jp.length} cues)`);
+  if (tw) found.push(`zh-TW (${tw.length} cues)`);
+  if (found.length > 0) {
+    logOk(`captions: ${found.join(', ')}`);
   } else {
-    logWarn(`captions: no official tracks in ${langs.join(',')}; lyrics will be null`);
+    logWarn(`captions: no official ja or zh-TW tracks; lyrics will be null`);
   }
 ```
 
-- [ ] **Step 5: Update `row.lyrics`**
+- [ ] **Step 6: Update the `row` construction**
 
-Find the `row = { …, lyrics: cues, analysis: analysis.frames, };` object literal and change the `lyrics:` line from `lyrics: cues,` to:
+Locate the `row = { ... }` object literal. Replace the current `lyrics: …` line with two sibling fields in the same position:
 
 ```js
-    lyrics: foundLangs.length > 0 ? cuesByLang : null,
+    lyricsJp: jp,
+    lyricsTw: tw,
 ```
 
-Leave every other property of `row` (videoId, title, metadata, analysis) exactly as it was.
+Every other property of `row` (`videoId`, `title`, `artist`, `releaseDate`, `metadata`, `analysis`) must stay exactly as it was.
 
-- [ ] **Step 6: Smoke-check the file for stale references**
+- [ ] **Step 7: Smoke-check for stale references**
 
 Run:
 
 ```bash
-grep -nE "argv\.lang\b|preferredLang|captionSource|result\.cues\b" analyzer.mjs src/youtube.mjs
+grep -nE "argv\.langs|cuesByLang|foundLangs|\\blyrics\\b:" analyzer.mjs src/youtube.mjs src/db.mjs
 ```
 
-Expected: **no matches**. If any line still references `argv.lang` (singular), `captionSource`, `preferredLang`, or `result.cues` (the old single-array shape), fix it before moving on.
+Expected: **no matches**. Any hit on `argv.langs`, `cuesByLang`, `foundLangs`, or a bare `lyrics:` object property means a stale reference survived — fix before moving on.
 
-- [ ] **Step 7: Run `--help` as a syntax check**
+Also run:
 
 ```bash
-node analyzer.mjs --help
+grep -n "\\-\\-langs" analyzer.mjs
 ```
 
-Expected: the new `USAGE` text prints, the word `--langs` appears, the word `--lang ` (singular, with trailing space) does **not** appear, exit code 0.
+Expected: **no matches**. The flag name must appear nowhere in the file.
 
-- [ ] **Step 8: Commit Tasks 2 and 3 together**
+- [ ] **Step 8: Run `--help` as a syntax check**
+
+Run: `node analyzer.mjs --help`
+Expected: prints the new USAGE, contains the word `--url` and `--force` but not `--langs`, exits 0.
+
+- [ ] **Step 9: Commit all four files together**
 
 ```bash
-git add src/youtube.mjs analyzer.mjs
-git commit -m "feat: multi-language lyrics via --langs (ja,zh-TW default)"
+git add supabase-schema.sql src/db.mjs src/youtube.mjs analyzer.mjs
+git commit -m "refactor: split lyrics into lyrics_jp and lyrics_tw columns"
 ```
 
-Do **not** stage `src/db.mjs` — it has unrelated uncommitted work per the repo's `git status`.
+Do **not** stage any other file. Do **not** include `virtual-clock-example/`. Do **not** amend the previous commit.
+
+- [ ] **Step 10: Verify commit contents**
+
+Run: `git show --stat HEAD`
+Expected: exactly four files changed — `analyzer.mjs`, `src/db.mjs`, `src/youtube.mjs`, `supabase-schema.sql`. No more, no fewer.
+
+Run: `git status`
+Expected: working tree clean except for the untracked `virtual-clock-example/` directory.
 
 ---
 
-## Task 4: Manual end-to-end verification
+## Task 5: Operator manual verification (handed to the human)
 
-**Files:** none (runtime verification against real YouTube videos and Supabase)
+**Files:** none (runtime verification)
 
-The spec calls out three scenarios that must be verified before declaring the feature done. Pick one URL for each scenario. Good starter candidates:
+Before this task can run, the operator must drop and recreate the `"Songs"` table in Supabase with the new DDL. The agent cannot do this — it requires DB credentials and destroys data.
 
-- **ja-only:** most original Japanese music videos on large label channels (e.g. YOASOBI, Ado) ship a human-uploaded `ja` track but no `zh-TW`.
-- **ja + zh-TW:** some cover/translation channels or lyric-video reuploads add an official `zh-TW` track alongside `ja`.
-- **neither:** any short clip with only auto-captions.
+- [ ] **Step 1: Operator drops and recreates the table**
 
-Use `--list-captions` on a candidate to confirm which official tracks it actually has before running the full pipeline:
+In the Supabase SQL editor:
 
-```bash
-node analyzer.mjs --url "<candidate-url>" --list-captions
+```sql
+drop table if exists "Songs";
 ```
 
-- [ ] **Step 1: Verify the ja-only case**
+then open `supabase-schema.sql` and run the `create table` block it contains (which now has `lyrics_jp` and `lyrics_tw`). Confirm with:
+
+```sql
+select column_name, data_type
+from information_schema.columns
+where table_name = 'Songs'
+order by ordinal_position;
+```
+
+Expected: rows include `lyrics_jp` and `lyrics_tw`, both `jsonb`. No `lyrics` column.
+
+- [ ] **Step 2: Verify the ja-only case**
 
 ```bash
 node analyzer.mjs --url "<ja-only video URL>" --force
 ```
 
-Expected console output includes a line like:
-
-```
-✓ captions: ja (NN cues)
-```
-
-Then in the Supabase SQL editor:
+Expected console line: `✓ captions: ja (N cues)`. SQL check:
 
 ```sql
-select video_id, jsonb_typeof(lyrics) as lyrics_type,
-       jsonb_object_keys(lyrics) as langs
+select (lyrics_jp is not null) as has_jp,
+       (lyrics_tw is not null) as has_tw
 from "Songs"
 where video_id = '<video_id>';
 ```
 
-Expected: `lyrics_type = 'object'`, one row with `langs = 'ja'`.
+Expected: `has_jp = true`, `has_tw = false`.
 
-- [ ] **Step 2: Verify the ja + zh-TW case**
+- [ ] **Step 3: Verify the ja + zh-TW case**
 
 ```bash
 node analyzer.mjs --url "<ja+zh-TW video URL>" --force
 ```
 
-Expected console output:
-
-```
-✓ captions: ja (NN cues), zh-TW (MM cues)
-```
-
-(Order reflects the default `--langs ja,zh-TW`; both entries must be present.)
-
-SQL check:
+Expected console line: `✓ captions: ja (N cues), zh-TW (M cues)`.
 
 ```sql
-select video_id, jsonb_object_keys(lyrics) as lang
-from "Songs"
-where video_id = '<video_id>'
-order by lang;
-```
-
-Expected: exactly two rows, `lang = 'ja'` and `lang = 'zh-TW'`. Spot-check one cue of each:
-
-```sql
-select lyrics->'ja'->0  as first_ja_cue,
-       lyrics->'zh-TW'->0 as first_zhtw_cue
+select (lyrics_jp is not null) as has_jp,
+       (lyrics_tw is not null) as has_tw,
+       lyrics_jp -> 0 as first_jp_cue,
+       lyrics_tw -> 0 as first_tw_cue
 from "Songs"
 where video_id = '<video_id>';
 ```
 
-Expected: both values are objects shaped `{"s": …, "d": …, "t": "…"}` with non-empty `t`.
+Expected: both booleans `true`; both first-cue objects shaped `{s,d,t}` with non-empty `t`.
 
-- [ ] **Step 3: Verify the "neither" case**
+- [ ] **Step 4: Verify the "neither" case**
 
 ```bash
 node analyzer.mjs --url "<no-official-captions video URL>" --force
 ```
 
-Expected console output includes:
-
-```
-! captions: no official tracks in ja,zh-TW; lyrics will be null
-```
-
-followed later by `✓ upserted to "Songs"` and exit code 0.
-
-SQL check:
+Expected console line: `! captions: no official ja or zh-TW tracks; lyrics will be null`, followed by `✓ upserted to "Songs"`, exit 0.
 
 ```sql
-select lyrics is null as lyrics_null
+select (lyrics_jp is null) as jp_null,
+       (lyrics_tw is null) as tw_null
 from "Songs"
 where video_id = '<video_id>';
 ```
 
-Expected: `lyrics_null = true`.
+Expected: both `true`.
 
-- [ ] **Step 4: Verify `--langs` override still works**
+- [ ] **Step 5: No commit**
 
-```bash
-node analyzer.mjs --url "<ja+zh-TW video URL>" --force --langs ja
-```
-
-Expected: console shows `captions: ja (NN cues)` only; SQL confirms only the `ja` key is present in `lyrics` for that row.
-
-- [ ] **Step 5: No extra commit**
-
-Verification produces no file changes. If any step failed, return to Task 2 or 3, fix the bug, and re-run **all** of Task 4 from the top before calling the feature done.
+Verification produces no file changes. If any step fails, return to Tasks 2–4, fix, re-run Task 5 from the top.
 
 ---
 
 ## Self-review notes
 
-- **Spec coverage:** schema shape (Task 3 step 5), CLI flag replacement (Task 3 steps 1–3), parallel multi-lang fetch with per-language error isolation (Task 2 step 1), log-line format both found/not-found (Task 3 step 4), wipe rather than migrate (Task 1), manual verification of all three required scenarios (Task 4 steps 1–3). The `--langs ja` override in Task 4 step 4 additionally exercises the flag's non-default path.
-- **No unused helpers left behind:** `fetchCaptions` returns `sources`/`errors` alongside `cuesByLang`; the analyzer consumes `cuesByLang` and `errors`, and `sources` is left as a forward-compatible extra (handy if a future `--verbose` log wants it). This is intentional, not a dead field.
-- **Order safety:** Task 2 leaves `main` in a broken state on purpose; Task 3 step 8 is the first commit, which fixes both files in a single atomic change.
+- **Spec coverage:** DDL change (Task 1), simplified `fetchCaptions` return shape (Task 2), db.mjs column mappings + `TABLE` rename absorption (Task 3), analyzer rewire with `--langs` removed (Task 4), three-scenario verification (Task 5).
+- **Atomic commit:** Tasks 1–4 intentionally defer committing until every file is ready, because changing any one of them in isolation leaves the branch broken (e.g. Task 2's `fetchCaptions` shape is incompatible with v1's analyzer).
+- **No orphan v1 artifacts:** the grep in Task 4 Step 7 catches `cuesByLang`, `foundLangs`, `argv.langs`, and bare `lyrics:` properties — the four signatures most likely to survive a sloppy refactor.
+- **Unrelated `src/db.mjs` change absorbed:** The `TABLE = 'KAF'` → `'Songs'` edit was an unrelated in-flight change; the user explicitly authorized rolling it into this commit.
