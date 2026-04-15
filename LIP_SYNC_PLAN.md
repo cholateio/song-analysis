@@ -4,12 +4,21 @@
 
 **Goal:** Build a virtual singer whose mouth shape automatically matches the singing voice — no manual animation, no per-song tuning.
 
-**Architecture:** Three-tier progressive pipeline. Tier 0 ships immediately from existing `analysis` data (client-only MVP). Tier 1 adds a Python source-separation step (Demucs) to isolate the vocal track and drives the mouth off a clean vocal RMS. Tier 2 extracts MFCCs from the isolated vocal and runs a lightweight client-side classifier to map each frame to one of five Japanese vowel visemes (a/i/u/e/o). We deliberately skip ASR-based text alignment (Whisper/MFA) because it is unreliable on sung Japanese audio.
+**Architecture:** Three-tier progressive pipeline. Tier 0 ships immediately from the existing analysis binary blob (client-only MVP). Tier 1 adds a Python source-separation step (Demucs) to isolate the vocal track and drives the mouth off a clean vocal RMS. Tier 2 extracts MFCCs from the isolated vocal and runs a lightweight client-side classifier to map each frame to one of five Japanese vowel visemes (a/i/u/e/o). We deliberately skip ASR-based text alignment (Whisper/MFA) because it is unreliable on sung Japanese audio.
 
 **Tech Stack:**
-- Backend pipeline: existing Node.js analyzer (`analyzer.mjs` + `src/audio.mjs`), new Python subprocess step (Demucs v4 `htdemucs`), Meyda (MFCC extraction)
+- Backend pipeline: existing Node.js analyzer (`analyzer.mjs` + `src/audio.mjs` + `src/binary_pack.mjs`), new Python subprocess step (Demucs v4 `htdemucs`), Meyda (MFCC extraction)
 - Frontend: Three.js + VRM model with blendshapes `aa / ih / ou / ee / oh`
-- Storage: existing Supabase `Songs` table (JSONB), no schema migrations required — additive fields only
+- Storage: existing Supabase `song-blobs` Storage bucket; new tiers extend the analysis binary frame layout and bump both the blob version byte and `metadata.schemaVersion`. See [DATA_CONTRACTS.md §8](DATA_CONTRACTS.md) for the versioning protocol.
+
+> **Note on binary format evolution.** Each tier adds new bytes to the
+> per-frame layout defined in [DATA_CONTRACTS.md §4](DATA_CONTRACTS.md). The
+> detailed code samples in Tier 1 and Tier 2 below describe the feature
+> extraction logic (Demucs + Meyda MFCC) but reference the pre-binary
+> in-memory frame shape for readability. When a tier is actually implemented,
+> update [src/binary_pack.mjs](src/binary_pack.mjs) to write the new fields
+> and bump `BIN_VERSION`; [DATA_CONTRACTS.md](DATA_CONTRACTS.md) must be
+> updated in the same commit.
 
 ---
 
@@ -19,9 +28,10 @@
 
 | Asset | Location | Relevant to |
 |---|---|---|
-| Per-frame 60 FPS spectrum `v[64]` (uint8) | `analysis` JSONB column | All tiers |
-| Per-frame RMS `r`, spectral centroid `c`, beat `k` | `analysis` JSONB column | Tier 0 fallback |
+| Per-frame 60 FPS spectrum `v[64]` (uint8) | `song-blobs/analysis/<video_id>.bin` (bytes 0–63 of each frame) | All tiers |
+| Per-frame RMS `r`, spectral centroid `c`, beat `k` | Same blob, bytes 64–66 of each frame | Tier 0 fallback |
 | Log band edges `bandEdges[65]` | `metadata.bandEdges` | Tier 0 vocal-band derivation |
+| Binary packer | [src/binary_pack.mjs](src/binary_pack.mjs) | Tier 1 / Tier 2 frame extension |
 | YouTube audio pipeline | [src/youtube.mjs](src/youtube.mjs) `spawnAudioPipeline()` | Tier 1 integration point |
 | Analyzer entry point | [analyzer.mjs](analyzer.mjs) | Tier 1, Tier 2 |
 | Meyda feature extraction | [src/audio.mjs](src/audio.mjs) `analyze()` | Tier 2 MFCC |
@@ -46,7 +56,7 @@
 
 ### Tier 0 (MVP) — front-end only
 
-No backend or schema changes. Ships as a ~50-line JS helper that any consumer of the existing `analysis` JSONB column can drop in.
+No backend or schema changes. Ships as a ~60-line JS helper that any consumer of the existing analysis binary blob can drop in.
 
 - **Create:** `examples/lip-sync-mvp.js` (reference implementation; can be copied into downstream frontend project)
 
@@ -65,25 +75,45 @@ No backend or schema changes. Ships as a ~50-line JS helper that any consumer of
 - **Create:** `reference/vowels/` directory with 5 labeled reference clips (a/i/u/e/o sung at steady pitch, ~2 seconds each, public-domain or user-recorded)
 - **Create:** `examples/lip-sync-viseme.js` — reference client-side classifier that loads centroids + per-frame MFCCs, outputs 5 blendshape weights
 
-### Schema evolution (additive only)
+### Schema evolution (analysis binary frame layout)
+
+Each tier extends the analysis frame with new trailing bytes and bumps the
+blob version byte (offset 4 of the header) + `metadata.schemaVersion` in
+lockstep.
 
 ```text
-analysis[i] before:     { v, r, c, k }
-analysis[i] after T1:   { v, r, c, k, rVoc }
-analysis[i] after T2:   { v, r, c, k, rVoc, voc }   // voc = uint8[13] MFCC
+Tier 0 (current, version 1):  67 bytes/frame
+  bytes  0-63 : v[64]
+  byte   64   : r
+  byte   65   : c
+  byte   66   : k
 
-metadata before:        { duration, fps, bpm, sampleRate, bandCount, bandEdges, vScale, centroidMaxHz, clock }
-metadata after T1:      + vocalIsolation: 'demucs-htdemucs-v4'
-metadata after T2:      + mfccCount: 13, mfccScale: 255, mfccMinDb, mfccMaxDb
+Tier 1 (version 2):           68 bytes/frame
+  bytes  0-66 : (unchanged)
+  byte   67   : rVoc          (uint8, isolated vocal RMS)
+
+Tier 2 (version 3):           81 bytes/frame
+  bytes  0-67 : (unchanged)
+  bytes 68-80 : voc[13]       (uint8 quantized MFCC)
+
+metadata Tier 0 (current):    { schemaVersion: 1, duration, fps, bpm, sampleRate, bandCount,
+                                bandEdges, vScale, centroidMaxHz, frameCount, analysisBlob,
+                                clockBlob, clock }
+metadata after T1:             + schemaVersion: 2, vocalIsolation: 'demucs-htdemucs-v4'
+metadata after T2:             + schemaVersion: 3, mfccCount: 13, mfccMinDb, mfccMaxDb
 ```
 
-Old rows without the new fields remain valid (fields are optional); client detects tier by presence of `rVoc` / `voc`.
+Consumers MUST check the blob version byte on load and fail if it's higher
+than they support. Because the layout is append-only, version-N consumers can
+still read the first N-tier's worth of bytes from a version-M>N blob if they
+choose to — but that's a conscious compatibility decision, not an automatic
+guarantee.
 
 ---
 
 ## Tier 0 — MVP Ships Immediately
 
-**Deliverable:** a JS helper that any consumer can drop into their Three.js / VRM frontend to drive `jawOpen` / `aa` blendshape from existing `analysis` JSONB.
+**Deliverable:** a JS helper that any consumer can drop into their Three.js / VRM frontend to drive `jawOpen` / `aa` blendshape from the existing analysis binary blob.
 
 **Why it matters:** proves the data contract works end-to-end and gives visible feedback the same day. Has known flaws (instrumentals trigger the mouth) — these are the motivation for Tier 1.
 
@@ -104,10 +134,15 @@ Old rows without the new fields remain valid (fields are optional); client detec
 // examples/lip-sync-mvp.js
 //
 // Tier 0 lip-sync MVP — drives a single `jawOpen` / `aa` blendshape weight
-// from the existing analysis JSONB. No backend changes required.
+// from the analysis binary blob. No backend changes required.
+//
+// The caller is responsible for fetching the blob (as an ArrayBuffer) from
+// Storage first; see DATA_CONTRACTS.md §4 for the layout and a reference
+// loadAnalysis() helper.
 //
 // Usage:
-//   const driver = createMvpLipSync(song);
+//   const analysisBuffer = await fetchAnalysisBlob(song);  // ArrayBuffer
+//   const driver = createMvpLipSync(song, analysisBuffer);
 //   function frame() {
 //     const t = audioElement.currentTime;
 //     const jawOpen = driver(t);
@@ -115,17 +150,28 @@ Old rows without the new fields remain valid (fields are optional); client detec
 //     requestAnimationFrame(frame);
 //   }
 
-export function createMvpLipSync(song, opts = {}) {
+const HEADER = 8;
+const FRAME_SIZE = 67;
+const BAND_COUNT = 64;
+
+export function createMvpLipSync(song, analysisBuffer, opts = {}) {
   const {
     smoothing = 0.7,   // EMA alpha for smoothed vocal RMS
     threshold = 0.25,  // values below this map to closed mouth
     gain      = 1.3,   // post-threshold amplification
   } = opts;
 
+  // Validate header
+  const bytes = new Uint8Array(analysisBuffer);
+  const magic = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
+  if (magic !== 'SABN') throw new Error(`bad analysis magic: ${magic}`);
+  if (bytes[4] !== 1)   throw new Error(`unsupported analysis version: ${bytes[4]}`);
+
   const meta = song.metadata;
-  const frames = song.analysis;
   const fps = meta.fps;
   const vScale = meta.vScale ?? 255;
+  const frameCount = meta.frameCount;
+  const frames = new Uint8Array(analysisBuffer, HEADER, frameCount * FRAME_SIZE);
 
   // Indices of v[] bands whose frequency range overlaps the vocal band 300-3400 Hz.
   const edges = meta.bandEdges;
@@ -140,11 +186,11 @@ export function createMvpLipSync(song, opts = {}) {
   let smoothed = 0;
 
   return function sampleJaw(currentTimeSec) {
-    const idx = Math.min(frames.length - 1, Math.floor(currentTimeSec * fps));
-    const f = frames[idx];
+    const idx = Math.min(frameCount - 1, Math.floor(currentTimeSec * fps));
+    const off = idx * FRAME_SIZE;
 
     let sum = 0;
-    for (const j of vocalBandIdx) sum += f.v[j] / vScale;
+    for (const j of vocalBandIdx) sum += frames[off + j] / vScale;
     const voRms = sum / vocalBandIdx.length;
 
     smoothed = smoothing * smoothed + (1 - smoothing) * voRms;
@@ -162,14 +208,25 @@ Run:
 ```bash
 node -e "
 import('./examples/lip-sync-mvp.js').then(({ createMvpLipSync }) => {
+  // Build a fake 2-frame blob matching the SABN v1 layout.
+  const HEADER = 8, FRAME_SIZE = 67;
+  const buf = new ArrayBuffer(HEADER + 2 * FRAME_SIZE);
+  const b = new Uint8Array(buf);
+  b[0] = 0x53; b[1] = 0x41; b[2] = 0x42; b[3] = 0x4E; b[4] = 1;  // SABN v1
+  // Frame 0: loud, mid-frequency energy
+  for (let j = 20; j < 40; j++) b[HEADER + j] = 200;
+  b[HEADER + 64] = 200;  // r
+  // Frame 1: quiet
+  for (let j = 20; j < 40; j++) b[HEADER + FRAME_SIZE + j] = 40;
+  b[HEADER + FRAME_SIZE + 64] = 40;
+
   const fakeSong = {
-    metadata: { fps: 60, vScale: 255, bandEdges: [20, 200, 400, 800, 1600, 3200, 6400, 16000] },
-    analysis: [
-      { v: [0, 0, 200, 200, 200, 0, 0], r: 0.8, c: 0.5, k: false },
-      { v: [0, 0, 50,  50,  50,  0, 0], r: 0.2, c: 0.5, k: false },
-    ],
+    metadata: {
+      fps: 60, vScale: 255, frameCount: 2,
+      bandEdges: Array.from({ length: 65 }, (_, i) => 20 * Math.pow(800, i / 64)),
+    },
   };
-  const jaw = createMvpLipSync(fakeSong);
+  const jaw = createMvpLipSync(fakeSong, buf);
   console.log('loud frame  jaw =', jaw(0 / 60));
   console.log('quiet frame jaw =', jaw(1 / 60));
 });
@@ -198,11 +255,26 @@ Append this section to the end of this file:
 ## Appendix A: MVP frontend integration (Three.js + VRM)
 
 ```js
+import { createClient } from '@supabase/supabase-js';
 import { createMvpLipSync } from './examples/lip-sync-mvp.js';
 
-// song loaded from Supabase
-const song = await fetch(`/api/songs/${videoId}`).then(r => r.json());
-const sampleJaw = createMvpLipSync(song);
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// 1. Pull the row (tiny)
+const { data: song } = await supabase
+  .from('Songs')
+  .select('*')
+  .eq('video_id', videoId)
+  .single();
+
+// 2. Pull the analysis blob (~1 MB for 4 min)
+const { data: url } = supabase.storage
+  .from('song-blobs')
+  .getPublicUrl(song.metadata.analysisBlob);
+const analysisBuffer = await fetch(url.publicUrl).then(r => r.arrayBuffer());
+
+// 3. Wire up the MVP helper
+const sampleJaw = createMvpLipSync(song, analysisBuffer);
 
 function tick() {
   const t = audioElement.currentTime;
@@ -230,19 +302,27 @@ git commit -m "docs: add MVP frontend integration example"
 
 ## Tier 1 — Vocal Isolation (Demucs)
 
-**Deliverable:** every song in `Songs` has a new per-frame `rVoc` field (isolated vocal RMS, uint8 quantized) that the frontend uses instead of the vocal-band RMS from Tier 0.
+**Deliverable:** the analysis binary blob gains a new `rVoc` byte per frame (isolated vocal RMS, uint8 quantized). Frame size grows from 67 → 68 bytes, blob version byte bumps to 2, and `metadata.schemaVersion` bumps to 2. The frontend uses `rVoc` instead of the vocal-band RMS from Tier 0.
 
 **Why it matters:** removes instrument pollution. Mouth only opens when the singer is actually singing.
 
 **Effort:** ~2–3 days. New Python dependency (Demucs + torch). CPU inference is ~2–5× realtime; a 4-minute song takes ~8–20 minutes on CPU, ~30 seconds on GPU.
 
 **Acceptance criteria:**
-- `analyzer.mjs --url <url>` writes rows with `analysis[i].rVoc` populated (uint8 0–255).
-- `metadata.vocalIsolation === 'demucs-htdemucs-v4'` on new rows.
-- Old rows without `rVoc` still pass Tier 0 code path (backward compatible).
-- Demucs failures (missing Python, model download error) fall back to Tier 0 behavior with a warning, not a hard fail.
-- Total added analysis size: ~56 KB/song (4 bytes × 14400 frames gzipped ~0.5×).
-- Frontend integration: one-line swap from `vocalBandRms` to `rVoc / 255` in the MVP helper.
+- [src/binary_pack.mjs](src/binary_pack.mjs) `ANALYSIS_FRAME_SIZE` is 68 and `BIN_VERSION` is 2.
+- `analyzer.mjs --url <url>` writes blobs whose per-frame byte 67 is `rVoc` in [0, 255].
+- `metadata.schemaVersion === 2` and `metadata.vocalIsolation === 'demucs-htdemucs-v4'` on new rows.
+- Frontend code validates the version byte and reads byte 67 as `rVoc / 255`.
+- Demucs failures (missing Python, model download error) fall back to Tier 0 behavior with a warning, not a hard fail: the analyzer still produces a version-1 blob with frame size 67.
+- Total added analysis size: ~14 KB/song (1 byte × 14400 frames).
+- Frontend integration: one-line swap from vocal-band RMS to `frames[off + 67] / 255` in the MVP helper.
+
+> **Binary-format note.** The code samples in the tasks below describe Demucs
+> integration and the Meyda RMS extraction. When implementing, the final step
+> of each pass is to write the `rVoc` byte at offset 67 inside
+> [src/binary_pack.mjs](src/binary_pack.mjs) and bump both `BIN_VERSION` and
+> `metadata.schemaVersion`. [DATA_CONTRACTS.md §4](DATA_CONTRACTS.md) must be
+> updated in the same commit.
 
 ### Task T1.1: Python environment setup docs
 
@@ -757,11 +837,19 @@ git commit -m "feat: MVP helper prefers rVoc when present"
 **Known risk:** the 5-vowel k-means classifier is the research-y part. We budget time for tuning and may need to iterate the reference samples. Mitigation: ship T2 behind a feature flag and A/B against the T1 open/closed mouth until the classifier is visually acceptable.
 
 **Acceptance criteria:**
-- `analysis[i].voc` is `uint8[13]` for all new rows.
+- [src/binary_pack.mjs](src/binary_pack.mjs) `ANALYSIS_FRAME_SIZE` is 81 and `BIN_VERSION` is 3.
+- Bytes 68..80 of each frame are the uint8 quantized 13-element MFCC vector.
+- `metadata.schemaVersion === 3`, `metadata.mfccCount === 13`, `metadata.mfccMinDb`, `metadata.mfccMaxDb` present.
 - `viseme-centroids.json` ships in the repo (computed once, committed).
-- `examples/lip-sync-viseme.js` outputs 5 blendshape weights per frame.
+- `examples/lip-sync-viseme.js` outputs 5 blendshape weights per frame, reading the MFCC slice directly from the blob bytes.
 - When a human listener hears a sung `a`, the `aa` blendshape dominates; same for `i/u/e/o`. Measured on a held-out test clip.
-- Size impact: +13 bytes/frame raw ≈ +190 KB/song, ≈ +19 MB for 100 songs.
+- Size impact: +13 bytes/frame × 14400 ≈ +190 KB/song, ≈ +19 MB for 100 songs.
+
+> **Binary-format note.** Same as Tier 1: the task code samples below describe
+> the Meyda MFCC extraction and the k-means classifier logic. When
+> implementing, append the 13 MFCC bytes at offset 68 in
+> [src/binary_pack.mjs](src/binary_pack.mjs), bump `BIN_VERSION` to 3 and
+> `metadata.schemaVersion` to 3, and update [DATA_CONTRACTS.md §4](DATA_CONTRACTS.md).
 
 ### Task T2.1: Extend the second-pass analyzer with MFCC extraction
 
@@ -1262,4 +1350,19 @@ Document what worked in a new `docs/viseme-tuning-notes.md`.
 
 ## Rollback Plan
 
-Each tier is additive and behind a data check (`hasVoc`, `'voc' in frames[0]`). To roll back T2, delete the MFCC extraction from `analyzeVocal` and the client falls back to T1 automatically. To roll back T1, unset `DEMUCS_PYTHON` and the client falls back to T0. No schema migrations are needed — all fields are optional JSONB keys.
+Each tier is additive in the sense that newer versions append bytes to the
+analysis frame. Consumers gate behavior on `metadata.schemaVersion` and the
+blob version byte.
+
+- **Roll back T2:** revert the T2 commits to [src/binary_pack.mjs](src/binary_pack.mjs)
+  (`ANALYSIS_FRAME_SIZE` 81 → 68) and [src/audio.mjs](src/audio.mjs) (drop
+  MFCC extraction), then re-run `analyzer.mjs --force` on affected rows. The
+  analyzer will write version-2 blobs. Old version-3 blobs in Storage will
+  still parse via their own header byte; T2 consumers will simply never see
+  new version-3 data.
+- **Roll back T1:** unset `DEMUCS_PYTHON` and revert the T1 commits (frame
+  size 68 → 67, `BIN_VERSION` 2 → 1). Re-run `analyzer.mjs --force` on
+  affected rows to regenerate version-1 blobs.
+- **No database migration is ever needed** — the rows just carry blob paths,
+  and the blobs carry their own versioning. The only schema change across
+  tiers is the integer value of `metadata.schemaVersion` inside the JSONB.

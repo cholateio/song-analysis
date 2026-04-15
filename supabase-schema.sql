@@ -1,7 +1,13 @@
 -- Canonical fresh-install DDL for the song-analysis project.
 -- The table name is capitalized, so every query must quote it: FROM "Songs".
--- For a description of the metadata / analysis / clock_analysis JSONB shapes
--- see DATA_CONTRACTS.md.
+-- For a description of the metadata JSONB shape and the binary blob format
+-- used for analysis + clock_analysis, see DATA_CONTRACTS.md.
+--
+-- Prerequisite: in the Supabase dashboard, create a public Storage bucket
+-- named 'song-blobs' before running analyzer.mjs. The analyzer uploads
+-- per-song binary blobs to:
+--   song-blobs/analysis/<video_id>.bin
+--   song-blobs/clock/<video_id>.bin
 
 create table if not exists "Songs" (
   id             uuid primary key default gen_random_uuid(),
@@ -12,8 +18,6 @@ create table if not exists "Songs" (
   metadata       jsonb       not null,
   lyrics_jp      jsonb,
   lyrics_tw      jsonb,
-  analysis       jsonb       not null,
-  clock_analysis jsonb,
   created_at     timestamptz not null default now(),
   updated_at     timestamptz not null default now()
 );

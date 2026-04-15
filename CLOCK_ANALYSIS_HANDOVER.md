@@ -113,70 +113,107 @@ would emit if you played the same audio through a microphone loopback.
 
 ---
 
-## 3. Row shape (clock_analysis column only)
+## 3. Storage layout
+
+Clock data is **not** in the `Songs` row. Every song has its byte-scaled FFT
+frames written as a small binary blob inside the `song-blobs` public Storage
+bucket:
+
+```
+song-blobs/clock/<video_id>.bin
+```
+
+The row's `metadata.clockBlob` field carries the relative path (e.g.
+`"clock/dQw4w9WgXcQ.bin"`). See [DATA_CONTRACTS.md §5](DATA_CONTRACTS.md) for
+the authoritative binary layout spec; in short:
+
+```
+Header (8 bytes):
+  bytes 0-3 : ASCII "SCBN"  — magic
+  byte  4   : 0x01          — version
+  bytes 5-7 : 0x00          — reserved
+
+Frame (128 bytes, repeated metadata.frameCount times):
+  bytes 0-127 : frequencies[0..127]   — uint8 byte-scaled FFT bins
+```
+
+Frame `i` of the clock blob corresponds to audio time `i / metadata.fps`
+seconds, and is **row-aligned** with frame `i` of the analysis blob
+(`metadata.analysisBlob`) — you can drive both visualizers off a single
+`idx` value.
+
+Relevant keys still live in `metadata.clock` for any consumer that wants them
+at hand (they also match the constants burned into every blob):
 
 ```ts
-type Song = {
-  // ...see DATA_CONTRACTS.md for full row shape...
-  metadata: {
-    clock: {
-      fftSize: 256;
-      binCount: 128;               // == frequencies.length
-      smoothingTimeConstant: 0.8;
-      minDecibels: -100;
-      maxDecibels: -30;
-      bassBinCount: 5;             // use this many bins when deriving bass client-side
-    };
-    // ...other metadata fields documented in DATA_CONTRACTS.md...
-  };
-  clock_analysis: Array<{
-    frequencies: number[];         // length 128, each 0..255
-    // bass is NOT stored — derive client-side as mean(frequencies[0..bassBinCount-1])
-  }> | null;
+metadata.clock = {
+  fftSize: 256,
+  binCount: 128,               // == frequencies.length in each frame
+  smoothingTimeConstant: 0.8,  // AnalyserNode default
+  minDecibels: -100,           // AnalyserNode default
+  maxDecibels: -30,            // AnalyserNode default
+  bassBinCount: 5,             // use this many bins when deriving bass
 };
 ```
 
-- **Frame rate:** `metadata.fps` (always 60).
-- **Frame count:** identical to `analysis` — the two arrays are row-aligned.
-- **Null case:** `clock_analysis` can be null for any row ingested before this
-  feature shipped. Re-run `analyzer.mjs --force` to populate it, or guard the
-  render path with a null check.
-
 ---
 
-## 4. Fetching
+## 4. Fetching from Storage
+
+The bucket is public, so the anon Supabase key is enough on the client — you
+don't need a signed URL. Pattern:
 
 ```js
-const { data } = await supabase
+// 1. Pull the row (tiny, ~50 KB)
+const { data: song } = await supabase
   .from('Songs')
-  .select('video_id, metadata, clock_analysis')
+  .select('video_id, metadata')
   .eq('video_id', videoId)
   .single();
+
+// 2. Resolve the public URL and download the blob as an ArrayBuffer
+const { data: url } = supabase.storage
+  .from('song-blobs')
+  .getPublicUrl(song.metadata.clockBlob);
+const buffer = await fetch(url.publicUrl).then(r => r.arrayBuffer());
+
+// 3. Validate + wrap the frame region
+const bytes = new Uint8Array(buffer);
+const magic = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
+if (magic !== 'SCBN') throw new Error('bad clock magic');
+if (bytes[4] !== 1)   throw new Error('unsupported clock version');
+
+const HEADER = 8;
+const FRAME_SIZE = 128;
+const frameCount = song.metadata.frameCount;
+const frames = new Uint8Array(buffer, HEADER, frameCount * FRAME_SIZE);
 ```
 
-Payload is large (see size table below) — only select `clock_analysis` on the
-page that actually renders it, and cache the decoded array in memory per song.
+Blobs are served with `Cache-Control: max-age=31536000`, so a repeat visit
+hits the browser / CDN cache with no download. Cache the decoded `Uint8Array`
+in memory for the lifetime of the current song selection — don't re-fetch on
+seek.
+
+Only fetch this blob on pages that actually render the clock halo. Pages that
+only need `analysis` (spectrum, lyrics, beat) can skip it entirely.
 
 ---
 
 ## 5. Playback sync
 
-Drive frame selection off the YouTube player's `getCurrentTime()`, not a local
-clock, so it stays in sync across seeks and buffering.
+Drive frame selection off your audio source's `currentTime` (YouTube iframe
+API, `<audio>` element, whatever) — never a local clock — so the visuals stay
+in sync across seeks, buffering, and pauses.
 
 ```js
-const FPS = song.metadata.fps;                       // 60
-const frames = song.clock_analysis;                  // may be null
+const FPS = song.metadata.fps;   // 60
+const N   = song.metadata.clock.bassBinCount;   // 5
 
-function sampleClock(currentTimeSec) {
-  if (!frames) return null;
-  const idx = Math.min(frames.length - 1, Math.floor(currentTimeSec * FPS));
-  return frames[idx];                                // { frequencies }
+function sampleClockBytes(currentTimeSec) {
+  const idx = Math.min(song.metadata.frameCount - 1, Math.floor(currentTimeSec * FPS));
+  return frames.subarray(idx * 128, (idx + 1) * 128);  // zero-copy view into the blob
 }
 
-// Derive bass the same way the live engine does: mean of first N bins.
-// N comes from metadata.clock.bassBinCount (5 by default).
-const N = song.metadata.clock.bassBinCount;
 function meanBass(freq) {
   let s = 0;
   for (let i = 0; i < N; i++) s += freq[i];
@@ -184,36 +221,45 @@ function meanBass(freq) {
 }
 
 function tick() {
-  const t = ytPlayer.getCurrentTime();               // YT IFrame API
-  const frame = sampleClock(t);
-  if (frame) render(meanBass(frame.frequencies), frame.frequencies);
+  const t = ytPlayer.getCurrentTime();
+  const freq = sampleClockBytes(t);
+  render(meanBass(freq), freq);
   requestAnimationFrame(tick);
 }
 ```
 
-Every element of `frequencies` is already a 0..255 value matching
-`getByteFrequencyData()` output — pass it straight into whatever rendering
-code used that before. The live engine's `bass` scalar is `mean(frequencies[0..N])`
-where `N = metadata.clock.bassBinCount`; derive it client-side as shown.
+`freq` is a zero-copy `Uint8Array` subarray — already 0..255 byte values, the
+same shape the original `getByteFrequencyData()` consumer used. Pass it
+straight into whatever rendering code expects that input.
+
+The live engine's `bass` scalar is `mean(frequencies[0..N])`; derive it
+client-side as shown above. `N` comes from `metadata.clock.bassBinCount`
+(currently 5, matches the live engine).
 
 ---
 
 ## 6. Size budget
 
-Each frame serializes to roughly **465 bytes** of JSON:
-`{"frequencies":[v0,v1,...,v127]}` where each byte value is 1–3 digits plus a
-comma. Total per song:
+Per-frame size is now a hard constant:
 
 ```
-frames   = floor((duration_sec * 48000 - 2048) / 800) + 1
-bytes    ≈ frames * 465
+file_size = 8 + frameCount * 128
+frameCount = floor((duration_sec * 48000 - 2048) / 800) + 1
 ```
 
-So a 4 min song ≈ 14,400 frames ≈ 6.7 MB raw JSON; a 12 min song ≈ 20 MB raw.
-Gzip over the wire cuts this roughly in half. Don't re-fetch on seek.
+| Duration | Frames | Blob size |
+|---------:|-------:|----------:|
+| 3 min    | ~10,800 | ~1.35 MB |
+| 4 min    | ~14,400 | ~1.80 MB |
+| 8 min    | ~28,800 | ~3.60 MB |
+| 12 min   | ~43,200 | ~5.50 MB |
 
-This is the exact row size as written by `analyzer.mjs`; run with `--dry-run`
-to measure a specific song if you need a real number.
+These are exact (the packer emits a fixed-size record); the CDN further
+gzip-compresses binary content when the client requests it, though gzip's
+win on byte-dense uint8 data is modest (~10–20%).
+
+For a combined row + both blobs size estimate (analysis + clock), see
+[DATA_CONTRACTS.md §9](DATA_CONTRACTS.md).
 
 ---
 
@@ -225,5 +271,10 @@ to measure a specific song if you need a real number.
   spec's −100/−30 dB window.
 - **Frame 0 is quiet.** `Ŷ_prev` starts at 0, so the first few frames ramp up
   from silence — exactly like the live clock on startup. Not a bug.
-- **Old rows have `clock_analysis = null`.** Re-run `analyzer.mjs --force` on
-  any song you need clock data on, or guard the render path.
+- **Check the magic bytes and version byte when parsing.** The header exists
+  precisely so consumers can fail loudly if the blob format evolves. Never
+  assume offset 0 is the first frame.
+- **Don't cache across `--force` re-runs of `analyzer.mjs`.** A forced re-run
+  overwrites the blob at the same URL; the `Cache-Control: max-age=31536000`
+  header means browsers may keep the old bytes. If you ever need a hard
+  invalidation, append a version query string or switch to hashed filenames.

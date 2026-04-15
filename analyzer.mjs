@@ -6,7 +6,8 @@ import { spawn } from 'node:child_process';
 import { parseVideoId, fetchMetadata, fetchCaptions, spawnAudioPipeline, listCaptionSources } from './src/youtube.mjs';
 import { analyze } from './src/audio.mjs';
 import { clockAnalyze } from './src/clock_analysis.mjs';
-import { exists, upsertSong } from './src/db.mjs';
+import { packAnalysis, packClock } from './src/binary_pack.mjs';
+import { exists, upsertSong, uploadBlob } from './src/db.mjs';
 
 const MAX_DURATION_SEC = 12 * 60;
 
@@ -159,6 +160,12 @@ async function main() {
   const clock = clockAnalyze(analysis.samples);
   logOk(`clock_analysis: ${clock.frames.length} frames, ${clock.binCount} bins (fftSize ${clock.fftSize})`);
 
+  const analysisBlob = packAnalysis(analysis.frames);
+  const clockBlob = packClock(clock.frames);
+  const analysisPath = `analysis/${videoId}.bin`;
+  const clockPath = `clock/${videoId}.bin`;
+  logOk(`packed: analysis ${formatSize(analysisBlob.length)}, clock ${formatSize(clockBlob.length)}`);
+
   const row = {
     videoId,
     title: info.title,
@@ -174,6 +181,9 @@ async function main() {
       bandEdges: analysis.bandEdges,
       vScale: analysis.vScale,
       centroidMaxHz: analysis.centroidMaxHz,
+      frameCount: analysis.frames.length,
+      analysisBlob: analysisPath,
+      clockBlob: clockPath,
       clock: {
         fftSize: clock.fftSize,
         binCount: clock.binCount,
@@ -185,16 +195,19 @@ async function main() {
     },
     lyricsJp: jp,
     lyricsTw: tw,
-    analysis: analysis.frames,
-    clockAnalysis: clock.frames,
   };
 
   if (argv['dry-run']) {
-    const payloadSize = Buffer.byteLength(JSON.stringify(row));
-    logOk(`dry-run: would upsert ${formatSize(payloadSize)} to "Songs" (skipped)`);
+    const rowSize = Buffer.byteLength(JSON.stringify(row));
+    const total = rowSize + analysisBlob.length + clockBlob.length;
+    logOk(`dry-run: row ${formatSize(rowSize)} + blobs ${formatSize(analysisBlob.length + clockBlob.length)} = ${formatSize(total)} (upload skipped)`);
     return;
   }
 
+  await uploadBlob(analysisPath, analysisBlob);
+  logOk(`uploaded: ${analysisPath}`);
+  await uploadBlob(clockPath, clockBlob);
+  logOk(`uploaded: ${clockPath}`);
   await upsertSong(row);
   logOk(`upserted to "Songs"`);
 }
