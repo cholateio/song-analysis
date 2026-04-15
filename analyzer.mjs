@@ -4,7 +4,8 @@ import minimist from 'minimist';
 import { spawn } from 'node:child_process';
 
 import { parseVideoId, fetchMetadata, fetchCaptions, spawnAudioPipeline, listCaptionSources } from './src/youtube.mjs';
-import { analyze, AGGREGATE_RANGES } from './src/audio.mjs';
+import { analyze } from './src/audio.mjs';
+import { clockAnalyze } from './src/clock_analysis.mjs';
 import { exists, upsertSong } from './src/db.mjs';
 
 const MAX_DURATION_SEC = 12 * 60;
@@ -64,7 +65,7 @@ function formatSize(bytes) {
   return `${n.toFixed(1)} ${units[i]}`;
 }
 
-function makeProgressReporter(duration) {
+function makeProgressReporter() {
   let lastPct = -1;
   return (received, expected) => {
     if (!expected) return;
@@ -147,7 +148,7 @@ async function main() {
   }
 
   const { pcmStream, done } = spawnAudioPipeline(videoId);
-  const onProgress = makeProgressReporter(info.duration);
+  const onProgress = makeProgressReporter();
   const analyzePromise = analyze(pcmStream, { durationHint: info.duration, onProgress });
 
   const analysis = await analyzePromise;
@@ -155,26 +156,37 @@ async function main() {
   process.stdout.write('\n');
   logOk(`analysis: ${analysis.frames.length} frames, ${analysis.bandCount} bins, BPM ${analysis.bpm ?? 'unknown'}`);
 
+  const clock = clockAnalyze(analysis.samples);
+  logOk(`clock_analysis: ${clock.frames.length} frames, ${clock.binCount} bins (fftSize ${clock.fftSize})`);
+
   const row = {
     videoId,
     title: info.title,
     artist: info.artist,
     releaseDate: info.releaseDate,
     metadata: {
+      schemaVersion: 1,
       duration: +analysis.duration.toFixed(3),
       fps: analysis.fps,
       bpm: analysis.bpm,
       sampleRate: analysis.sampleRate,
       bandCount: analysis.bandCount,
       bandEdges: analysis.bandEdges,
-      bassRange:  [AGGREGATE_RANGES.bass.lo,  AGGREGATE_RANGES.bass.hi],
-      midRange:   [AGGREGATE_RANGES.mid.lo,   AGGREGATE_RANGES.mid.hi],
-      highRange:  [AGGREGATE_RANGES.high.lo,  AGGREGATE_RANGES.high.hi],
-      vocalRange: [AGGREGATE_RANGES.vocal.lo, AGGREGATE_RANGES.vocal.hi],
+      vScale: analysis.vScale,
+      centroidMaxHz: analysis.centroidMaxHz,
+      clock: {
+        fftSize: clock.fftSize,
+        binCount: clock.binCount,
+        smoothingTimeConstant: clock.smoothingTimeConstant,
+        minDecibels: clock.minDecibels,
+        maxDecibels: clock.maxDecibels,
+        bassBinCount: clock.bassBinCount,
+      },
     },
     lyricsJp: jp,
     lyricsTw: tw,
     analysis: analysis.frames,
+    clockAnalysis: clock.frames,
   };
 
   if (argv['dry-run']) {

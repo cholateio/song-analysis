@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/Users/User/Desktop/song-analysis/virtual-music-clock -type f \\\\\\( -name \"*.js\" -o -name \"*.jsx\" -o -name \"*.ts\" -o -name \"*.tsx\" \\\\\\) -exec grep -l \"getByteFrequencyData\\\\|getFloatFrequencyData\\\\|getByteTimeDomainData\\\\|smoothingTimeConstant\\\\|maxDecibels\\\\|minDecibels\" {} \\\\;)",
+      "Bash(node -e ':*)",
+      "Read(//c/Users/User/.claude/projects/c--Users-User-Desktop-song-analysis/memory/**)",
+      "Bash(node --check src/clock_analysis.mjs)",
+      "Bash(grep -r \"rms\\\\|bass\\\\|mid\\\\|high\\\\|vocal\\\\|frequencies\\\\|phase\\\\|beat\\\\|brightness\\\\|saturation\\\\|hue\" /c/Users/User/Desktop/song-analysis/virtual-music-clock/app/*.js --include=\"*.js\")"
+    ]
+  }
+}

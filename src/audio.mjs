@@ -4,16 +4,11 @@ export const SAMPLE_RATE = 48000;
 export const FPS = 60;
 export const BUFFER_SIZE = 2048;
 export const HOP = SAMPLE_RATE / FPS;
-export const BAND_COUNT = 64;
-export const FREQ_MIN = 20;
-export const FREQ_MAX = 16000;
 
-export const AGGREGATE_RANGES = {
-  bass:   { lo: 20,   hi: 250   },
-  mid:    { lo: 250,  hi: 4000  },
-  high:   { lo: 4000, hi: 15000 },
-  vocal:  { lo: 300,  hi: 3400  },
-};
+const BAND_COUNT = 64;
+const FREQ_MIN = 20;
+const FREQ_MAX = 16000;
+const V_SCALE = 255;
 
 const FFT_BIN_HZ = SAMPLE_RATE / BUFFER_SIZE;
 const FFT_BIN_COUNT = BUFFER_SIZE / 2;
@@ -37,23 +32,6 @@ const BAND_FFT_RANGES = (() => {
   }
   return ranges;
 })();
-
-function hzRangeToBins(loHz, hiHz) {
-  const lo = Math.max(0, Math.floor(loHz / FFT_BIN_HZ));
-  const hi = Math.min(FFT_BIN_COUNT - 1, Math.ceil(hiHz / FFT_BIN_HZ));
-  return [lo, hi];
-}
-
-const BASS_BINS  = hzRangeToBins(AGGREGATE_RANGES.bass.lo,  AGGREGATE_RANGES.bass.hi);
-const MID_BINS   = hzRangeToBins(AGGREGATE_RANGES.mid.lo,   AGGREGATE_RANGES.mid.hi);
-const HIGH_BINS  = hzRangeToBins(AGGREGATE_RANGES.high.lo,  AGGREGATE_RANGES.high.hi);
-const VOCAL_BINS = hzRangeToBins(AGGREGATE_RANGES.vocal.lo, AGGREGATE_RANGES.vocal.hi);
-
-function sumRange(spectrum, [lo, hi]) {
-  let s = 0;
-  for (let i = lo; i <= hi; i++) s += spectrum[i];
-  return s;
-}
 
 async function collectPcm(pcmStream, totalExpectedBytes, onProgress) {
   const chunks = [];
@@ -96,10 +74,12 @@ export async function analyze(pcmStream, { durationHint = 0, onProgress = null }
   const rawFrames = new Array(totalFrames);
   const rawBinRows = new Array(totalFrames);
   const perBandMax = new Float32Array(BAND_COUNT);
-  let bMax = 0, mMax = 0, hMax = 0, voMax = 0, rMax = 0;
+  let rMax = 0;
+  let cMaxHz = 0;
 
   const window = new Float32Array(BUFFER_SIZE);
-  let prevSpectrum = null;
+  const prevSpectrum = new Float32Array(FFT_BIN_COUNT);
+  let hasPrevSpectrum = false;
   const fluxHistory = [];
   const FLUX_HISTORY_LEN = 90;
   const MIN_BEAT_GAP = 6;
@@ -110,9 +90,11 @@ export async function analyze(pcmStream, { durationHint = 0, onProgress = null }
     const start = frameIdx * HOP;
     for (let i = 0; i < BUFFER_SIZE; i++) window[i] = samples[start + i];
 
-    const features = Meyda.extract(['amplitudeSpectrum', 'rms'], window);
+    const features = Meyda.extract(['amplitudeSpectrum', 'rms', 'spectralCentroid'], window);
     const spectrum = features.amplitudeSpectrum;
     const rms = features.rms || 0;
+    const centroidBin = features.spectralCentroid || 0;
+    const centroidHz = Number.isFinite(centroidBin) ? centroidBin * FFT_BIN_HZ : 0;
 
     const bins = new Float32Array(BAND_COUNT);
     for (let i = 0; i < BAND_COUNT; i++) {
@@ -125,24 +107,18 @@ export async function analyze(pcmStream, { durationHint = 0, onProgress = null }
     }
     rawBinRows[frameIdx] = bins;
 
-    const bRaw  = sumRange(spectrum, BASS_BINS);
-    const mRaw  = sumRange(spectrum, MID_BINS);
-    const hRaw  = sumRange(spectrum, HIGH_BINS);
-    const voRaw = sumRange(spectrum, VOCAL_BINS);
-    if (bRaw  > bMax)  bMax  = bRaw;
-    if (mRaw  > mMax)  mMax  = mRaw;
-    if (hRaw  > hMax)  hMax  = hRaw;
-    if (voRaw > voMax) voMax = voRaw;
-    if (rms   > rMax)  rMax  = rms;
+    if (rms > rMax) rMax = rms;
+    if (centroidHz > cMaxHz) cMaxHz = centroidHz;
 
     let flux = 0;
-    if (prevSpectrum) {
+    if (hasPrevSpectrum) {
       for (let i = 0; i < spectrum.length; i++) {
         const diff = spectrum[i] - prevSpectrum[i];
         if (diff > 0) flux += diff;
       }
     }
-    prevSpectrum = Float32Array.from(spectrum);
+    prevSpectrum.set(spectrum);
+    hasPrevSpectrum = true;
 
     fluxHistory.push(flux);
     if (fluxHistory.length > FLUX_HISTORY_LEN) fluxHistory.shift();
@@ -163,10 +139,11 @@ export async function analyze(pcmStream, { durationHint = 0, onProgress = null }
       }
     }
 
-    rawFrames[frameIdx] = { b: bRaw, m: mRaw, h: hRaw, vo: voRaw, r: rms, k: isBeat };
+    rawFrames[frameIdx] = { r: rms, k: isBeat, cHz: centroidHz };
   }
 
   const n3 = (v, max) => max > 0 ? Math.round((v / max) * 1000) / 1000 : 0;
+  const q8 = (v, max) => max > 0 ? Math.min(V_SCALE, Math.round((v / max) * V_SCALE)) : 0;
 
   const frames = new Array(totalFrames);
   for (let i = 0; i < totalFrames; i++) {
@@ -174,16 +151,13 @@ export async function analyze(pcmStream, { durationHint = 0, onProgress = null }
     const binRow = rawBinRows[i];
     const v = new Array(BAND_COUNT);
     for (let j = 0; j < BAND_COUNT; j++) {
-      v[j] = n3(binRow[j], perBandMax[j]);
+      v[j] = q8(binRow[j], perBandMax[j]);
     }
     frames[i] = {
       v,
-      b:  n3(f.b,  bMax),
-      m:  n3(f.m,  mMax),
-      h:  n3(f.h,  hMax),
-      vo: n3(f.vo, voMax),
-      r:  n3(f.r,  rMax),
-      k:  f.k,
+      r: n3(f.r, rMax),
+      c: n3(f.cHz, cMaxHz),
+      k: f.k,
     };
   }
 
@@ -201,6 +175,9 @@ export async function analyze(pcmStream, { durationHint = 0, onProgress = null }
     sampleRate: SAMPLE_RATE,
     bandCount: BAND_COUNT,
     bandEdges: Array.from(BAND_EDGES_HZ, v => Math.round(v * 10) / 10),
+    vScale: V_SCALE,
+    centroidMaxHz: Math.round(cMaxHz * 10) / 10,
+    samples,
   };
 }
 
