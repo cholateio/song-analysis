@@ -11,10 +11,11 @@ import { exists, upsertSong, uploadBlob } from './src/db.mjs';
 
 const MAX_DURATION_SEC = 12 * 60;
 
-const USAGE = `Usage: node analyzer.mjs --url "<youtube-url-or-id>" [--force] [--dry-run] [--list-captions]
+const USAGE = `Usage: node analyzer.mjs --url "<youtube-url-or-id>" [--genre <tag>] [--force] [--dry-run] [--list-captions]
 
 Flags
   --url            YouTube URL in any form, or a raw 11-char video ID  (required)
+  --genre          Free-form category tag (e.g. "cover", "album1", "live")
   --force          Reprocess even if video_id already exists in "Songs"
   --dry-run        Run the full pipeline, skip the Supabase upsert
   --list-captions  Print available caption sources for this video and exit
@@ -80,7 +81,7 @@ function makeProgressReporter() {
 
 async function main() {
   const argv = minimist(process.argv.slice(2), {
-    string: ['url'],
+    string: ['url', 'genre'],
     boolean: ['force', 'dry-run', 'help', 'list-captions'],
     alias: { h: 'help' },
   });
@@ -170,6 +171,7 @@ async function main() {
     videoId,
     title: info.title,
     artist: info.artist,
+    genre: argv.genre || null,
     releaseDate: info.releaseDate,
     metadata: {
       schemaVersion: 1,

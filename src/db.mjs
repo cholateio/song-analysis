@@ -47,6 +47,7 @@ export async function upsertSong(row) {
     video_id:     row.videoId,
     title:        row.title,
     artist:       row.artist,
+    genre:        row.genre,
     release_date: row.releaseDate,
     metadata:     row.metadata,
     lyrics_jp:    row.lyricsJp,

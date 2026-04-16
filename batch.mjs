@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 // Reads a text file of YouTube URLs (one per line) and runs analyzer.mjs on
-// each sequentially. Blank lines and lines starting with # are skipped.
+// each sequentially. Each line can optionally include a genre tag after the URL,
+// separated by whitespace:
+//
+//   https://www.youtube.com/watch?v=jpwy7kP8Pps cover
+//   https://www.youtube.com/watch?v=y4sHBySTCzk album1
+//   https://youtu.be/abc12345678
+//
+// Blank lines and lines starting with # are skipped.
 //
 // Usage:  node batch.mjs urls.txt [--force] [--dry-run]
 //
@@ -23,16 +30,24 @@ const lines = readFileSync(txtFile, 'utf8')
   .map(l => l.trim())
   .filter(l => l && !l.startsWith('#'));
 
-console.log(`Found ${lines.length} URLs in ${txtFile}\n`);
+console.log(`Found ${lines.length} entries in ${txtFile}\n`);
 
 let ok = 0;
 let fail = 0;
 
 for (let i = 0; i < lines.length; i++) {
-  const url = lines[i];
-  console.log(`[${i + 1}/${lines.length}] ${url}`);
+  const parts = lines[i].split(/\s+/);
+  const url = parts[0];
+  const genre = parts[1] || null;
+
+  const label = genre ? `${url}  [${genre}]` : url;
+  console.log(`[${i + 1}/${lines.length}] ${label}`);
+
+  const cmdArgs = ['analyzer.mjs', '--url', url, ...flags];
+  if (genre) cmdArgs.push('--genre', genre);
+
   try {
-    execFileSync('node', ['analyzer.mjs', '--url', url, ...flags], {
+    execFileSync('node', cmdArgs, {
       stdio: 'inherit',
       timeout: 10 * 60 * 1000,
     });

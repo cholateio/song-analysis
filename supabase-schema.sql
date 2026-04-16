@@ -14,6 +14,7 @@ create table if not exists "Songs" (
   video_id       text        not null unique,
   title          text        not null,
   artist         text,
+  genre          text,
   release_date   date,
   metadata       jsonb       not null,
   lyrics_jp      jsonb,
