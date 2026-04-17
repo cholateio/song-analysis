@@ -169,7 +169,7 @@ async function main() {
 
   const row = {
     videoId,
-    title: info.title,
+    title: info.title.replaceAll('covered by 花譜', '').replaceAll('by 花譜', '').trim(),
     artist: info.artist,
     genre: argv.genre || null,
     releaseDate: info.releaseDate,

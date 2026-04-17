@@ -8,17 +8,17 @@ import { fileURLToPath } from 'node:url';
 import minimist from 'minimist';
 
 export function classify(title) {
-  if (title.includes('歌ってみた') || title.includes('試著唱了')) return 'cover';
+  if (title.includes('歌ってみた') || title.includes('Cover') || title.includes('covered')) return 'cover';
   if (title.includes('可不')) return 'kafu';
-  if (title.includes('組曲')) return 'collab';
+  if (title.includes('組曲') || title.includes('Suite')) return 'suite';
   return 'album';
 }
 
 export function shouldSkip({ duration, title }) {
   if (duration == null) return { skip: true, reason: 'no-duration' };
-  if (duration < 120) return { skip: true, reason: 'short' };
+  if (duration < 125 || duration > 600) return { skip: true, reason: 'short' };
   if (title.includes('Trailer')) return { skip: true, reason: 'trailer' };
-  if (title.includes('Live Ver')) return { skip: true, reason: 'live' };
+  if (title.includes('Live Ver') || title.includes('前夜')) return { skip: true, reason: 'live' };
   return { skip: false };
 }
 
