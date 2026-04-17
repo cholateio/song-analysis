@@ -66,7 +66,7 @@ const DEFAULT_OUT = 'urls-virtual_kaf.txt';
 function runYtDlp(channelUrl) {
   const result = spawnSync(
     'yt-dlp',
-    ['--flat-playlist', '--dump-json', channelUrl],
+    ['--flat-playlist', '--playlist-reverse', '--dump-json', channelUrl],
     { encoding: 'utf8', maxBuffer: 200 * 1024 * 1024 },
   );
   if (result.error && result.error.code === 'ENOENT') {
@@ -97,6 +97,9 @@ function main(argv) {
   for (const e of entries) {
     const s = shouldSkip({ duration: e.duration, title: e.title ?? '' });
     if (s.skip) {
+      if (s.reason === 'no-duration') {
+        process.stderr.write(`warn: skipping entry id=${e.id} (no duration field)\n`);
+      }
       reasons[s.reason]++;
       continue;
     }
