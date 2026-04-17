@@ -2,6 +2,11 @@
 // Generates a <url> <genre> text file for batch.mjs by scraping a YouTube
 // channel with yt-dlp. See docs/superpowers/specs/2026-04-17-generate-urls-design.md
 
+import { spawnSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import minimist from 'minimist';
+
 export function classify(title) {
   if (title.includes('歌ってみた') || title.includes('試著唱了')) return 'cover';
   if (title.includes('可不')) return 'kafu';
@@ -54,11 +59,6 @@ export function parseEntries(ndjson) {
   }
   return [...keyed, ...unkeyed];
 }
-
-import { spawnSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import minimist from 'minimist';
 
 const DEFAULT_CHANNEL = 'https://www.youtube.com/@virtual_kaf/videos';
 const DEFAULT_OUT = 'urls-virtual_kaf.txt';
