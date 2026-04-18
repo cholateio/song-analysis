@@ -3,7 +3,7 @@ import 'dotenv/config';
 import minimist from 'minimist';
 import { spawn } from 'node:child_process';
 
-import { parseVideoId, fetchMetadata, fetchCaptions, spawnAudioPipeline, listCaptionSources } from './src/youtube.mjs';
+import { parseVideoId, fetchMetadata, fetchCaptions, spawnAudioPipeline, listCaptionSources, parseLoudnessRangeLRA } from './src/youtube.mjs';
 import { analyze } from './src/audio.mjs';
 import { clockAnalyze } from './src/clock_analysis.mjs';
 import { packAnalysis, packClock } from './src/binary_pack.mjs';
@@ -149,14 +149,21 @@ async function main() {
     logWarn(`captions: no official ja or zh-TW tracks; lyrics will be null`);
   }
 
-  const { pcmStream, done } = spawnAudioPipeline(videoId);
+  const { pcmStream, done, getFfmpegStderr } = spawnAudioPipeline(videoId);
   const onProgress = makeProgressReporter();
   const analyzePromise = analyze(pcmStream, { durationHint: info.duration, onProgress });
 
   const analysis = await analyzePromise;
   await done;
   process.stdout.write('\n');
-  logOk(`analysis: ${analysis.frames.length} frames, ${analysis.bandCount} bins, BPM ${analysis.bpm ?? 'unknown'}`);
+  logOk(`analysis: ${analysis.frames.length} frames, BPM ${analysis.bpm ?? 'unknown'}${analysis.bpmConfidence !== null ? ` (conf ${analysis.bpmConfidence})` : ''}`);
+
+  const loudnessRangeLRA = parseLoudnessRangeLRA(getFfmpegStderr());
+  if (loudnessRangeLRA !== null) {
+    logOk(`loudness range: LRA ${loudnessRangeLRA} LU`);
+  } else {
+    logWarn(`loudness range: ebur128 summary not found in ffmpeg stderr; loudnessRangeLRA will be null`);
+  }
 
   const clock = clockAnalyze(analysis.samples);
   logOk(`clock_analysis: ${clock.frames.length} frames, ${clock.binCount} bins (fftSize ${clock.fftSize})`);
@@ -174,26 +181,17 @@ async function main() {
     genre: argv.genre || null,
     releaseDate: info.releaseDate,
     metadata: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       duration: +analysis.duration.toFixed(3),
-      fps: analysis.fps,
-      bpm: analysis.bpm,
-      sampleRate: analysis.sampleRate,
-      bandCount: analysis.bandCount,
-      bandEdges: analysis.bandEdges,
-      vScale: analysis.vScale,
-      centroidMaxHz: analysis.centroidMaxHz,
       frameCount: analysis.frames.length,
+      bpm: analysis.bpm,
+      bpmConfidence: analysis.bpmConfidence,
+      medianCentroidHz: analysis.medianCentroidHz,
+      loudnessRangeLRA,
+      zcrVariance: analysis.zcrVariance,
+      meanSpectralContrastDb: analysis.meanSpectralContrastDb,
       analysisBlob: analysisPath,
       clockBlob: clockPath,
-      clock: {
-        fftSize: clock.fftSize,
-        binCount: clock.binCount,
-        smoothingTimeConstant: clock.smoothingTimeConstant,
-        minDecibels: clock.minDecibels,
-        maxDecibels: clock.maxDecibels,
-        bassBinCount: clock.bassBinCount,
-      },
     },
     lyricsJp: jp,
     lyricsTw: tw,

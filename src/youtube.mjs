@@ -197,10 +197,15 @@ export function spawnAudioPipeline(videoId) {
     videoUrl(videoId),
   ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
+  // -loglevel info required for the ebur128 summary (integrated loudness + LRA)
+  // to reach stderr. framelog=verbose suppresses per-frame ebur128 lines at
+  // info level; only the final summary survives.
   const ffmpeg = spawn('ffmpeg', [
     '-hide_banner',
-    '-loglevel', 'error',
+    '-loglevel', 'info',
+    '-nostats',
     '-i', 'pipe:0',
+    '-af', 'ebur128=framelog=verbose',
     '-f', 'f32le',
     '-ac', '1',
     '-ar', '48000',
@@ -237,5 +242,17 @@ export function spawnAudioPipeline(videoId) {
     ffmpeg.on('close', c => { ffmpegClosed = true; ffmpegCode = c; check(); });
   });
 
-  return { pcmStream: ffmpeg.stdout, done };
+  return {
+    pcmStream: ffmpeg.stdout,
+    done,
+    getFfmpegStderr: () => ffmpegStderr,
+  };
+}
+
+export function parseLoudnessRangeLRA(ffmpegStderr) {
+  // Match "LRA:         6.8 LU" but NOT "LRA low:" / "LRA high:" (those end in LUFS).
+  const m = ffmpegStderr.match(/LRA:\s+(-?\d+(?:\.\d+)?)\s+LU(?!FS)/);
+  if (!m) return null;
+  const v = Number(m[1]);
+  return Number.isFinite(v) ? v : null;
 }

@@ -33,6 +33,42 @@ const BAND_FFT_RANGES = (() => {
   return ranges;
 })();
 
+// Octave bands for spectral-contrast: 100 Hz – 12.8 kHz (7 cut-offs → 6 bands).
+const CONTRAST_EDGES_HZ = [100, 200, 400, 800, 1600, 3200, 6400, 12800];
+const CONTRAST_BAND_BINS = (() => {
+  const ranges = [];
+  for (let i = 0; i < CONTRAST_EDGES_HZ.length - 1; i++) {
+    const lo = Math.max(0, Math.floor(CONTRAST_EDGES_HZ[i] / FFT_BIN_HZ));
+    const hi = Math.min(FFT_BIN_COUNT - 1, Math.max(lo, Math.ceil(CONTRAST_EDGES_HZ[i + 1] / FFT_BIN_HZ) - 1));
+    ranges.push([lo, hi]);
+  }
+  return ranges;
+})();
+const CONTRAST_WORK = new Float32Array(FFT_BIN_COUNT);
+
+function frameSpectralContrastDb(spectrum) {
+  const eps = 1e-8;
+  let sumDb = 0;
+  let bandsCounted = 0;
+  for (const [lo, hi] of CONTRAST_BAND_BINS) {
+    const n = hi - lo + 1;
+    if (n < 3) continue;
+    for (let i = 0; i < n; i++) CONTRAST_WORK[i] = spectrum[lo + i];
+    const slice = CONTRAST_WORK.subarray(0, n);
+    slice.sort();
+    const k = Math.max(1, Math.floor(n * 0.2));
+    let valleySum = 0;
+    for (let i = 0; i < k; i++) valleySum += slice[i];
+    let peakSum = 0;
+    for (let i = n - k; i < n; i++) peakSum += slice[i];
+    const peak = peakSum / k;
+    const valley = valleySum / k;
+    sumDb += 20 * Math.log10((peak + eps) / (valley + eps));
+    bandsCounted++;
+  }
+  return bandsCounted > 0 ? sumDb / bandsCounted : 0;
+}
+
 async function collectPcm(pcmStream, totalExpectedBytes, onProgress) {
   const chunks = [];
   let received = 0;
@@ -74,6 +110,9 @@ export async function analyze(pcmStream, { durationHint = 0, onProgress = null }
   const rawFrames = new Array(totalFrames);
   const rawBinRows = new Array(totalFrames);
   const perBandMax = new Float32Array(BAND_COUNT);
+  const centroidHistory = new Float32Array(totalFrames);
+  const zcrHistory = new Float32Array(totalFrames);
+  const contrastHistory = new Float32Array(totalFrames);
   let rMax = 0;
   let cMaxHz = 0;
 
@@ -90,11 +129,15 @@ export async function analyze(pcmStream, { durationHint = 0, onProgress = null }
     const start = frameIdx * HOP;
     for (let i = 0; i < BUFFER_SIZE; i++) window[i] = samples[start + i];
 
-    const features = Meyda.extract(['amplitudeSpectrum', 'rms', 'spectralCentroid'], window);
+    const features = Meyda.extract(['amplitudeSpectrum', 'rms', 'spectralCentroid', 'zcr'], window);
     const spectrum = features.amplitudeSpectrum;
     const rms = features.rms || 0;
     const centroidBin = features.spectralCentroid || 0;
     const centroidHz = Number.isFinite(centroidBin) ? centroidBin * FFT_BIN_HZ : 0;
+    const zcr = Number.isFinite(features.zcr) ? features.zcr : 0;
+    centroidHistory[frameIdx] = centroidHz;
+    zcrHistory[frameIdx] = zcr;
+    contrastHistory[frameIdx] = frameSpectralContrastDb(spectrum);
 
     const bins = new Float32Array(BAND_COUNT);
     for (let i = 0; i < BAND_COUNT; i++) {
@@ -165,33 +208,56 @@ export async function analyze(pcmStream, { durationHint = 0, onProgress = null }
   for (let i = 0; i < totalFrames; i++) {
     if (rawFrames[i].k) beatTimes.push(i / FPS);
   }
-  const bpm = estimateBpm(beatTimes);
+  const { bpm, confidence: bpmConfidence } = estimateBpm(beatTimes);
+
+  const sortedCentroid = Float32Array.from(centroidHistory);
+  sortedCentroid.sort();
+  const medianCentroidHz = sortedCentroid[Math.floor(totalFrames / 2)];
+
+  let zcrSum = 0;
+  for (let i = 0; i < totalFrames; i++) zcrSum += zcrHistory[i];
+  const zcrMean = zcrSum / totalFrames;
+  let zcrSq = 0;
+  for (let i = 0; i < totalFrames; i++) {
+    const d = zcrHistory[i] - zcrMean;
+    zcrSq += d * d;
+  }
+  const zcrVariance = totalFrames > 1 ? zcrSq / (totalFrames - 1) : 0;
+
+  let contrastSum = 0;
+  for (let i = 0; i < totalFrames; i++) contrastSum += contrastHistory[i];
+  const meanSpectralContrastDb = contrastSum / totalFrames;
 
   return {
     frames,
     bpm,
+    bpmConfidence,
+    medianCentroidHz: Math.round(medianCentroidHz * 10) / 10,
+    zcrVariance: +zcrVariance.toFixed(3),
+    meanSpectralContrastDb: +meanSpectralContrastDb.toFixed(2),
     duration: totalSamples / SAMPLE_RATE,
-    fps: FPS,
-    sampleRate: SAMPLE_RATE,
-    bandCount: BAND_COUNT,
-    bandEdges: Array.from(BAND_EDGES_HZ, v => Math.round(v * 10) / 10),
-    vScale: V_SCALE,
-    centroidMaxHz: Math.round(cMaxHz * 10) / 10,
     samples,
   };
 }
 
 function estimateBpm(beatTimes) {
-  if (beatTimes.length < 4) return null;
+  if (beatTimes.length < 4) return { bpm: null, confidence: null };
   const intervals = [];
   for (let i = 1; i < beatTimes.length; i++) {
     intervals.push(beatTimes[i] - beatTimes[i - 1]);
   }
   intervals.sort((a, b) => a - b);
   const median = intervals[Math.floor(intervals.length / 2)];
-  if (!(median > 0)) return null;
+  if (!(median > 0)) return { bpm: null, confidence: null };
+
+  let within = 0;
+  for (const iv of intervals) {
+    if (Math.abs(iv - median) / median < 0.1) within++;
+  }
+  const confidence = +(within / intervals.length).toFixed(3);
+
   let bpm = 60 / median;
   while (bpm < 60)  bpm *= 2;
   while (bpm > 200) bpm /= 2;
-  return Math.round(bpm);
+  return { bpm: Math.round(bpm), confidence };
 }

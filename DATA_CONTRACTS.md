@@ -87,42 +87,40 @@ Storage blobs referenced from `metadata`.
 
 Index: `songs_updated_at_idx on (updated_at desc)`.
 
+A sibling table **`AnalysisSchema`** holds the static constants (sample rate,
+band edges, blob header layout, clock render parameters) that are shared across
+every song for a given `schemaVersion`. See §11.
+
 ---
 
 ## 3. `metadata` — JSONB object
 
 All keys are always present on new rows. Ranges shown are post-rounding as
-written by the analyzer.
+written by the analyzer. Per-song scalar features live here; shared constants
+(sampleRate, bandEdges, blob header layout, etc.) live in `AnalysisSchema` —
+see §11.
 
 ```ts
 type Metadata = {
-  schemaVersion: 1;             // bump on breaking shape changes; see §8
-  duration: number;             // song length in seconds, 3 decimal places
-  fps: 60;                      // analysis frame rate, fixed at 60
-  bpm: number | null;           // estimated BPM (integer 60..200) or null if detection failed
-  sampleRate: 48000;            // PCM sample rate used for analysis, fixed
-  bandCount: 64;                // number of spectral bands per analysis frame, fixed
-  bandEdges: number[];          // length 65; bandEdges[i] and [i+1] bracket band i in Hz
-  vScale: 255;                  // divide a frame's v[j] byte by this to get [0,1]
-  centroidMaxHz: number;        // peak spectral centroid across the song in Hz; see §4
-  frameCount: number;           // number of frames in BOTH blobs (they are row-aligned)
-  analysisBlob: string;         // relative path inside song-blobs: "analysis/<video_id>.bin"
-  clockBlob: string;            // relative path inside song-blobs: "clock/<video_id>.bin"
-  clock: {
-    fftSize: 256;
-    binCount: 128;              // bins per clock frame
-    smoothingTimeConstant: 0.8; // AnalyserNode default
-    minDecibels: -100;          // AnalyserNode default
-    maxDecibels: -30;           // AnalyserNode default
-    bassBinCount: 5;            // use this many bins when deriving clock bass client-side
-  };
+  schemaVersion: 2;                  // bump on breaking shape changes; see §8
+  duration: number;                  // song length in seconds, 3 decimal places
+  frameCount: number;                // number of frames in BOTH blobs (they are row-aligned)
+
+  // Rhythm
+  bpm: number | null;                // estimated BPM (integer 60..200) or null if detection failed
+  bpmConfidence: number | null;      // fraction of inter-beat intervals within ±10% of median; null if bpm is null
+
+  // Timbre / loudness (per-song scalars, 2D-map friendly)
+  medianCentroidHz: number;          // median spectral centroid across frames (Hz). Brightness/warmth axis.
+  loudnessRangeLRA: number | null;   // EBU R128 Loudness Range (LU). null if ffmpeg ebur128 couldn't compute (very short audio)
+  zcrVariance: number;               // sample variance of Meyda zcr (zero-crossings per 2048-sample frame) across all frames
+  meanSpectralContrastDb: number;    // mean over frames of per-frame spectral contrast (dB) across 6 octave bands 100–12800 Hz
+
+  // Blob pointers
+  analysisBlob: string;              // relative path inside song-blobs: "analysis/<video_id>.bin"
+  clockBlob: string;                 // relative path inside song-blobs: "clock/<video_id>.bin"
 };
 ```
-
-**`bandEdges`**: 65 logarithmically-spaced Hz values from 20 Hz to 16000 Hz.
-`bandEdges[i]` is the low edge of band `i`, `bandEdges[i+1]` is its high edge.
-Use this when you need to map a physical frequency range (e.g. "bass = 20–250 Hz")
-to `v[]` indices — see §4.
 
 **`duration`** is derived from PCM sample count / `sampleRate` (not from
 YouTube metadata), so it reflects the actual decoded audio length.
@@ -133,6 +131,42 @@ already in metadata, but useful for sanity checks):
 ```
 frameCount = floor((duration_sec * 48000 - 2048) / 800) + 1
 ```
+
+### Per-song feature semantics
+
+- **`medianCentroidHz`** — median of per-frame spectral centroid across the
+  song, in Hz. Median (not mean or max) because transients like cymbals and
+  sibilants spike the centroid; median describes the "dominant timbre" most
+  of the time. Use for cross-song brightness/warmth comparisons and as a 2D
+  map axis. Ranges observed: ~800 Hz (warm bass-heavy) to ~4000 Hz (bright
+  distorted rock).
+
+- **`loudnessRangeLRA`** — EBU R128 Loudness Range in LU, produced by
+  `ffmpeg -af ebur128`. Measures intra-song dynamic contrast (difference
+  between quiet and loud passages, gated). Low LRA (< 4 LU) = compressed /
+  wall-of-sound; high LRA (> 10 LU) = very dynamic (classical, unmastered).
+  Null if audio was too short for ebur128 to gate.
+
+- **`zcrVariance`** — sample variance of Meyda's `zcr` feature across all
+  analysis frames. Each per-frame `zcr` is the count of zero-crossings in the
+  2048-sample window (43 ms at 48 kHz). Variance captures temporal burstiness
+  of high-frequency / percussive content — steady tonal material has low
+  variance; songs with crashing drums, sibilant vocals, or breathy
+  fricatives alongside smooth sections have high variance.
+
+- **`meanSpectralContrastDb`** — mean across frames of per-frame spectral
+  contrast, in dB. Per-frame contrast is computed on 6 octave subbands
+  (cut-offs 100, 200, 400, 800, 1600, 3200, 6400, 12800 Hz); in each band
+  the top 20% of magnitudes (peak) is compared to the bottom 20% (valley),
+  and `20·log10(peak/valley)` is averaged over the 6 bands. High contrast
+  (> 20 dB) = tonal / well-separated instruments (classical, vocals); low
+  contrast (< 10 dB) = noisy / wall-of-sound (distorted rock, ambient).
+
+- **`bpmConfidence`** — `count(|interval − median| / median < 0.1) /
+  count(all intervals)`. `1.0` means every detected inter-beat interval is
+  within 10% of the median; `0.5` means half. Distinguishes
+  "no beat found" (`bpm: null`, `bpmConfidence: null`) from
+  "beat found but unstable" (`bpm: 140`, `bpmConfidence: 0.4`).
 
 ---
 
@@ -161,21 +195,25 @@ Total file size: `8 + frameCount * 67` bytes.
 ### Field semantics
 
 - **`v[64]`** — per-band magnitude spectrum. Each byte is one of 64 log-spaced
-  frequency bands (see `bandEdges` in metadata). Values are **peak-normalized
-  per band across the full song**, then quantized to uint8 (0–255). Divide by
-  `metadata.vScale` (= 255) to recover a float in [0, 1]. This normalization is
-  per-band, so each band independently uses its full dynamic range — good for
-  spectrograms, but means you cannot recover absolute loudness from `v[]`
-  alone. Use `r` for that.
+  frequency bands (see `bandEdges` in `AnalysisSchema.config` — §11). Values
+  are **peak-normalized per band across the full song**, then quantized to
+  uint8 (0–255). Divide by `config.vScale` (= 255) to recover a float in
+  [0, 1]. This normalization is per-band, so each band independently uses its
+  full dynamic range — good for spectrograms, but means you cannot recover
+  absolute loudness from `v[]` alone. Use `r` for that.
 
 - **`r`** — RMS loudness of the frame, normalized to [0, 255] against the
   song's peak RMS. Divide by 255 to get [0, 1]. Use this for "overall how loud
   is this moment" — drives bloom, camera shake, mouth opening, etc.
 
-- **`c`** — spectral centroid, normalized to [0, 255] against the song's peak
-  centroid. Divide by 255 to get [0, 1], multiply by `metadata.centroidMaxHz`
-  to recover absolute Hz. High values = bright timbres (cymbals, sibilance,
-  front vowels); low values = dark timbres (bass, round vowels).
+- **`c`** — spectral centroid, normalized to [0, 255] against the song's
+  **own peak** centroid. Divide by 255 to get a [0, 1] **relative brightness**
+  value within that song. Because the reference is per-song (not a shared
+  scale), `c` is *not* cross-song comparable and cannot be mapped back to
+  absolute Hz. For cross-song brightness comparisons, use
+  `metadata.medianCentroidHz` instead. Within a single song, `c` is still
+  useful as a 0–1 brightness index that tracks moment-to-moment timbre
+  (high = cymbals/sibilance, low = bass/round vowels).
 
 - **`k`** — beat flag. `1` on the first frame of each detected beat, else `0`.
   The detector is spectral-flux-based with a ~90-frame moving-window threshold
@@ -229,7 +267,7 @@ async function loadAnalysis(song, supabase) {
 ```js
 const idx = Math.min(
   frameCount - 1,
-  Math.floor(currentTimeSec * song.metadata.fps),
+  Math.floor(currentTimeSec * schema.config.fps),
 );
 const frame = analysis.getFrame(idx);
 ```
@@ -238,30 +276,37 @@ const frame = analysis.getFrame(idx);
 
 Earlier versions stored separate `b/m/h/vo` aggregate fields (bass / mid /
 high / vocal band energy). These were removed; re-derive from `v[]` +
-`bandEdges` when needed:
+`bandEdges` (read from `AnalysisSchema.config` — see §11) when needed:
 
 ```js
-// Run once at load time
-function computeBandIndices(meta, loHz, hiHz) {
+// Once at app load: fetch schema constants and cache them
+const { data: schema } = await supabase
+  .from('AnalysisSchema')
+  .select('config')
+  .eq('version', 2)
+  .single();
+const BAND_EDGES = schema.config.bandEdges;   // length 65
+const BAND_COUNT = schema.config.bandCount;   // 64
+const V_SCALE    = schema.config.vScale;      // 255
+
+function computeBandIndices(loHz, hiHz) {
   const out = [];
-  for (let i = 0; i < meta.bandCount; i++) {
-    const bandLo = meta.bandEdges[i];
-    const bandHi = meta.bandEdges[i + 1];
-    if (bandHi >= loHz && bandLo <= hiHz) out.push(i);
+  for (let i = 0; i < BAND_COUNT; i++) {
+    if (BAND_EDGES[i + 1] >= loHz && BAND_EDGES[i] <= hiHz) out.push(i);
   }
   return out;
 }
 
-const bassIdx  = computeBandIndices(song.metadata,   20,   250);
-const midIdx   = computeBandIndices(song.metadata,  250,  4000);
-const highIdx  = computeBandIndices(song.metadata, 4000, 15000);
-const vocalIdx = computeBandIndices(song.metadata,  300,  3400);
+const bassIdx  = computeBandIndices(  20,   250);
+const midIdx   = computeBandIndices( 250,  4000);
+const highIdx  = computeBandIndices(4000, 15000);
+const vocalIdx = computeBandIndices( 300,  3400);
 
 // Per frame
 function avg(v, idx) {
   let s = 0;
   for (const i of idx) s += v[i];
-  return s / (idx.length * 255);   // result in [0, 1]
+  return s / (idx.length * V_SCALE);   // result in [0, 1]
 }
 const bassEnergy = avg(frame.v, bassIdx);
 ```
@@ -292,15 +337,15 @@ Total file size: `8 + frameCount * 128` bytes.
 
 - **`frequencies[128]`** — byte-scaled magnitude spectrum exactly as
   `getByteFrequencyData()` would return from a Web Audio `AnalyserNode` with
-  `fftSize = 256`, `smoothingTimeConstant = 0.8`, `minDecibels = -100`,
-  `maxDecibels = -30`. Pre-smoothed by the spec's τ=0.8 EMA; **do not apply
-  additional smoothing** on the client — it will feel laggy.
+  the parameters listed in `AnalysisSchema.config.clock` (§11). Pre-smoothed
+  by the spec's τ=0.8 EMA; **do not apply additional smoothing** on the
+  client — it will feel laggy.
 
 - **No `bass` field.** The live virtual-music-clock WebSocket payload carries
   `bass = mean(dataArray[0..4])`; offline we omit it because it is trivially
   derivable. Use:
   ```js
-  const N = song.metadata.clock.bassBinCount;  // 5
+  const N = schema.config.clock.bassBinCount;  // 5
   function meanBass(freq) {
     let s = 0;
     for (let i = 0; i < N; i++) s += freq[i];
@@ -384,8 +429,8 @@ Consequences:
 - `analysis[i]` and `clock_analysis[i]` describe the **same instant** at the
   same index `i`. You can read them in lockstep with a single `idx` value.
 - `analysis.frameCount === clock.frameCount === metadata.frameCount`.
-- Map wall-clock time to index with `Math.floor(t * metadata.fps)` for either
-  blob.
+- Map wall-clock time to index with `Math.floor(t * schema.config.fps)` for
+  either blob.
 
 Lyrics (`lyrics_jp`, `lyrics_tw`) are not frame-indexed; they carry their own
 `s` / `d` in seconds and should be looked up by binary search or linear scan.
@@ -394,7 +439,7 @@ Lyrics (`lyrics_jp`, `lyrics_tw`) are not frame-indexed; they carry their own
 
 ## 8. Schema versioning
 
-`metadata.schemaVersion` is a single integer. Current value: **`1`**.
+`metadata.schemaVersion` is a single integer. Current value: **`2`**.
 
 - **Bump on breaking changes:** removed field, changed semantics of an existing
   field, changed binary layout, or changed normalization/quantization.
@@ -405,6 +450,20 @@ Lyrics (`lyrics_jp`, `lyrics_tw`) are not frame-indexed; they carry their own
   should be bumped together when a blob layout changes.
 - Consumers SHOULD check both `metadata.schemaVersion` and the blob version
   byte on load and fail loudly if they encounter an unexpected value.
+
+### History
+
+- **v2** (current): moved static constants (`fps`, `sampleRate`, `bandCount`,
+  `bandEdges`, `vScale`, `clock.*`) from per-song `metadata` to the shared
+  `AnalysisSchema` table (§11). Added per-song features `bpmConfidence`,
+  `medianCentroidHz`, `loudnessRangeLRA`, `zcrVariance`,
+  `meanSpectralContrastDb`. Removed `centroidMaxHz` (max is noise-dominated
+  by transients and has no cross-song discriminative power — use
+  `medianCentroidHz` instead). Blob magic/version bytes unchanged (per-frame
+  layout identical to v1); the `c` byte's semantics are narrowed from
+  "absolute-Hz-recoverable" to "relative brightness within this song" — use
+  `medianCentroidHz` for cross-song comparison.
+- **v1**: original schema with all constants inlined per song.
 
 Planned future versions (see [LIP_SYNC_PLAN.md](LIP_SYNC_PLAN.md)) will add
 isolated-vocal-derived fields to the analysis frame — those will extend the
@@ -490,7 +549,7 @@ access is just integer math:
 ```js
 function tick() {
   const t = audioElement.currentTime;
-  const idx = Math.min(analysis.frameCount - 1, Math.floor(t * song.metadata.fps));
+  const idx = Math.min(analysis.frameCount - 1, Math.floor(t * schema.config.fps));
 
   // Direct byte access — no per-frame allocation
   const aOff = idx * 67;
@@ -523,3 +582,63 @@ function tick() {
 If a page only needs one blob (e.g. a lyric-display page that doesn't render
 the clock halo), fetch only that blob. There's no penalty for skipping
 `clock_analysis` — the row doesn't carry it.
+
+---
+
+## 11. `AnalysisSchema` table — shared constants per schemaVersion
+
+Static parameters that are identical for every song analyzed with a given
+`schemaVersion` live in a separate small table rather than being duplicated
+on every row. One row per version; the client fetches it once at app load
+and caches the result.
+
+### DDL
+
+```sql
+create table if not exists "AnalysisSchema" (
+  version    int primary key,
+  config     jsonb not null,
+  created_at timestamptz not null default now()
+);
+```
+
+### `config` shape (v2)
+
+```ts
+type AnalysisConfig = {
+  fps: 60;
+  sampleRate: 48000;
+  bandCount: 64;
+  bandEdges: number[];           // length 65, log-spaced from 20 Hz to 16000 Hz
+  vScale: 255;                   // divisor for v[] bytes
+  analysisFrameBytes: 67;
+  analysisBlobMagic: "SABN";
+  analysisBlobVersion: 1;
+  clockFrameBytes: 128;
+  clockBlobMagic: "SCBN";
+  clockBlobVersion: 1;
+  clock: {
+    fftSize: 256;
+    binCount: 128;
+    smoothingTimeConstant: 0.8;
+    minDecibels: -100;
+    maxDecibels: -30;
+    bassBinCount: 5;
+  };
+};
+```
+
+### Client fetch pattern
+
+```js
+const { data: row, error } = await supabase
+  .from('AnalysisSchema')
+  .select('config')
+  .eq('version', 2)   // match metadata.schemaVersion
+  .single();
+if (error) throw error;
+const schema = row;   // cache for the app lifetime
+```
+
+Fetch once at app load, not per song. The row is tiny (~1 KB) and never
+changes within a schemaVersion.
