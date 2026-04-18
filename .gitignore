@@ -3,4 +3,5 @@ node_modules/
 *.log
 tmp/
 
+urls-virtual_kaf.txt
 batch-failed-*.txt
