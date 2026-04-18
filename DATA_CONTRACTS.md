@@ -87,9 +87,10 @@ Storage blobs referenced from `metadata`.
 
 Index: `songs_updated_at_idx on (updated_at desc)`.
 
-A sibling table **`AnalysisSchema`** holds the static constants (sample rate,
-band edges, blob header layout, clock render parameters) that are shared across
-every song for a given `schemaVersion`. See §11.
+Static constants (sample rate, band edges, blob header layout, clock render
+parameters) that are identical for every song with a given `schemaVersion`
+are **not** stored in the database. They're hardcoded in the frontend bundle,
+keyed by `schemaVersion`. See §11.
 
 ---
 
@@ -97,8 +98,8 @@ every song for a given `schemaVersion`. See §11.
 
 All keys are always present on new rows. Ranges shown are post-rounding as
 written by the analyzer. Per-song scalar features live here; shared constants
-(sampleRate, bandEdges, blob header layout, etc.) live in `AnalysisSchema` —
-see §11.
+(sampleRate, bandEdges, blob header layout, etc.) are bundled with the
+frontend — see §11.
 
 ```ts
 type Metadata = {
@@ -195,12 +196,12 @@ Total file size: `8 + frameCount * 67` bytes.
 ### Field semantics
 
 - **`v[64]`** — per-band magnitude spectrum. Each byte is one of 64 log-spaced
-  frequency bands (see `bandEdges` in `AnalysisSchema.config` — §11). Values
-  are **peak-normalized per band across the full song**, then quantized to
-  uint8 (0–255). Divide by `config.vScale` (= 255) to recover a float in
-  [0, 1]. This normalization is per-band, so each band independently uses its
-  full dynamic range — good for spectrograms, but means you cannot recover
-  absolute loudness from `v[]` alone. Use `r` for that.
+  frequency bands (see `bandEdges` in the bundled schema constants — §11).
+  Values are **peak-normalized per band across the full song**, then
+  quantized to uint8 (0–255). Divide by `schema.vScale` (= 255) to recover a
+  float in [0, 1]. This normalization is per-band, so each band independently
+  uses its full dynamic range — good for spectrograms, but means you cannot
+  recover absolute loudness from `v[]` alone. Use `r` for that.
 
 - **`r`** — RMS loudness of the frame, normalized to [0, 255] against the
   song's peak RMS. Divide by 255 to get [0, 1]. Use this for "overall how loud
@@ -267,7 +268,7 @@ async function loadAnalysis(song, supabase) {
 ```js
 const idx = Math.min(
   frameCount - 1,
-  Math.floor(currentTimeSec * schema.config.fps),
+  Math.floor(currentTimeSec * schema.fps),
 );
 const frame = analysis.getFrame(idx);
 ```
@@ -276,23 +277,17 @@ const frame = analysis.getFrame(idx);
 
 Earlier versions stored separate `b/m/h/vo` aggregate fields (bass / mid /
 high / vocal band energy). These were removed; re-derive from `v[]` +
-`bandEdges` (read from `AnalysisSchema.config` — see §11) when needed:
+the bundled `bandEdges` (see §11) when needed:
 
 ```js
-// Once at app load: fetch schema constants and cache them
-const { data: schema } = await supabase
-  .from('AnalysisSchema')
-  .select('config')
-  .eq('version', 2)
-  .single();
-const BAND_EDGES = schema.config.bandEdges;   // length 65
-const BAND_COUNT = schema.config.bandCount;   // 64
-const V_SCALE    = schema.config.vScale;      // 255
+import { ANALYSIS_SCHEMAS } from './analysisSchemas';
+const schema = ANALYSIS_SCHEMAS[song.metadata.schemaVersion];
+const { bandEdges, bandCount, vScale } = schema;
 
 function computeBandIndices(loHz, hiHz) {
   const out = [];
-  for (let i = 0; i < BAND_COUNT; i++) {
-    if (BAND_EDGES[i + 1] >= loHz && BAND_EDGES[i] <= hiHz) out.push(i);
+  for (let i = 0; i < bandCount; i++) {
+    if (bandEdges[i + 1] >= loHz && bandEdges[i] <= hiHz) out.push(i);
   }
   return out;
 }
@@ -306,7 +301,7 @@ const vocalIdx = computeBandIndices( 300,  3400);
 function avg(v, idx) {
   let s = 0;
   for (const i of idx) s += v[i];
-  return s / (idx.length * V_SCALE);   // result in [0, 1]
+  return s / (idx.length * vScale);   // result in [0, 1]
 }
 const bassEnergy = avg(frame.v, bassIdx);
 ```
@@ -337,15 +332,15 @@ Total file size: `8 + frameCount * 128` bytes.
 
 - **`frequencies[128]`** — byte-scaled magnitude spectrum exactly as
   `getByteFrequencyData()` would return from a Web Audio `AnalyserNode` with
-  the parameters listed in `AnalysisSchema.config.clock` (§11). Pre-smoothed
-  by the spec's τ=0.8 EMA; **do not apply additional smoothing** on the
-  client — it will feel laggy.
+  the parameters listed in `schema.clock` (§11). Pre-smoothed by the spec's
+  τ=0.8 EMA; **do not apply additional smoothing** on the client — it will
+  feel laggy.
 
 - **No `bass` field.** The live virtual-music-clock WebSocket payload carries
   `bass = mean(dataArray[0..4])`; offline we omit it because it is trivially
   derivable. Use:
   ```js
-  const N = schema.config.clock.bassBinCount;  // 5
+  const N = schema.clock.bassBinCount;  // 5
   function meanBass(freq) {
     let s = 0;
     for (let i = 0; i < N; i++) s += freq[i];
@@ -429,7 +424,7 @@ Consequences:
 - `analysis[i]` and `clock_analysis[i]` describe the **same instant** at the
   same index `i`. You can read them in lockstep with a single `idx` value.
 - `analysis.frameCount === clock.frameCount === metadata.frameCount`.
-- Map wall-clock time to index with `Math.floor(t * schema.config.fps)` for
+- Map wall-clock time to index with `Math.floor(t * schema.fps)` for
   either blob.
 
 Lyrics (`lyrics_jp`, `lyrics_tw`) are not frame-indexed; they carry their own
@@ -453,16 +448,17 @@ Lyrics (`lyrics_jp`, `lyrics_tw`) are not frame-indexed; they carry their own
 
 ### History
 
-- **v2** (current): moved static constants (`fps`, `sampleRate`, `bandCount`,
-  `bandEdges`, `vScale`, `clock.*`) from per-song `metadata` to the shared
-  `AnalysisSchema` table (§11). Added per-song features `bpmConfidence`,
-  `medianCentroidHz`, `loudnessRangeLRA`, `zcrVariance`,
-  `meanSpectralContrastDb`. Removed `centroidMaxHz` (max is noise-dominated
-  by transients and has no cross-song discriminative power — use
-  `medianCentroidHz` instead). Blob magic/version bytes unchanged (per-frame
-  layout identical to v1); the `c` byte's semantics are narrowed from
-  "absolute-Hz-recoverable" to "relative brightness within this song" — use
-  `medianCentroidHz` for cross-song comparison.
+- **v2** (current): removed static constants (`fps`, `sampleRate`,
+  `bandCount`, `bandEdges`, `vScale`, `clock.*`) from per-song `metadata` —
+  they're now bundled with the frontend and keyed by `schemaVersion` (§11).
+  Added per-song features `bpmConfidence`, `medianCentroidHz`,
+  `loudnessRangeLRA`, `zcrVariance`, `meanSpectralContrastDb`. Removed
+  `centroidMaxHz` (max is noise-dominated by transients and has no
+  cross-song discriminative power — use `medianCentroidHz` instead). Blob
+  magic/version bytes unchanged (per-frame layout identical to v1); the `c`
+  byte's semantics are narrowed from "absolute-Hz-recoverable" to
+  "relative brightness within this song" — use `medianCentroidHz` for
+  cross-song comparison.
 - **v1**: original schema with all constants inlined per song.
 
 Planned future versions (see [LIP_SYNC_PLAN.md](LIP_SYNC_PLAN.md)) will add
@@ -549,7 +545,7 @@ access is just integer math:
 ```js
 function tick() {
   const t = audioElement.currentTime;
-  const idx = Math.min(analysis.frameCount - 1, Math.floor(t * schema.config.fps));
+  const idx = Math.min(analysis.frameCount - 1, Math.floor(t * schema.fps));
 
   // Direct byte access — no per-frame allocation
   const aOff = idx * 67;
@@ -585,60 +581,74 @@ the clock halo), fetch only that blob. There's no penalty for skipping
 
 ---
 
-## 11. `AnalysisSchema` table — shared constants per schemaVersion
+## 11. Schema constants — bundled with the frontend
 
 Static parameters that are identical for every song analyzed with a given
-`schemaVersion` live in a separate small table rather than being duplicated
-on every row. One row per version; the client fetches it once at app load
-and caches the result.
-
-### DDL
-
-```sql
-create table if not exists "AnalysisSchema" (
-  version    int primary key,
-  config     jsonb not null,
-  created_at timestamptz not null default now()
-);
-```
-
-### `config` shape (v2)
-
-```ts
-type AnalysisConfig = {
-  fps: 60;
-  sampleRate: 48000;
-  bandCount: 64;
-  bandEdges: number[];           // length 65, log-spaced from 20 Hz to 16000 Hz
-  vScale: 255;                   // divisor for v[] bytes
-  analysisFrameBytes: 67;
-  analysisBlobMagic: "SABN";
-  analysisBlobVersion: 1;
-  clockFrameBytes: 128;
-  clockBlobMagic: "SCBN";
-  clockBlobVersion: 1;
-  clock: {
-    fftSize: 256;
-    binCount: 128;
-    smoothingTimeConstant: 0.8;
-    minDecibels: -100;
-    maxDecibels: -30;
-    bassBinCount: 5;
-  };
-};
-```
-
-### Client fetch pattern
+`schemaVersion` are **not stored in the database**. They're hardcoded in the
+frontend bundle, keyed by `schemaVersion`. Every song already carries
+`metadata.schemaVersion`, so the frontend looks up the matching constants
+at render time:
 
 ```js
-const { data: row, error } = await supabase
-  .from('AnalysisSchema')
-  .select('config')
-  .eq('version', 2)   // match metadata.schemaVersion
-  .single();
-if (error) throw error;
-const schema = row;   // cache for the app lifetime
+// src/lib/analysisSchemas.js (frontend)
+export const ANALYSIS_SCHEMAS = {
+  2: {
+    fps: 60,
+    sampleRate: 48000,
+    bandCount: 64,
+    bandEdges: [
+      20, 22.2, 24.65, 27.36, 30.37, 33.72, 37.43, 41.55, 46.12, 51.2,
+      56.84, 63.1, 70.04, 77.75, 86.31, 95.82, 106.37, 118.08, 131.08, 145.51,
+      161.53, 179.31, 199.05, 220.97, 245.3, 272.3, 302.28, 335.56, 372.5, 413.52,
+      459.04, 509.58, 565.69, 627.97, 697.1, 773.85, 859.05, 953.63, 1058.62, 1175.17,
+      1304.55, 1448.18, 1607.62, 1784.61, 1981.09, 2199.2, 2441.33, 2710.11, 3008.48, 3339.71,
+      3707.4, 4115.57, 4568.68, 5071.67, 5630.05, 6249.9, 6937.99, 7701.84, 8549.79, 9491.09,
+      10536.03, 11696.01, 12983.7, 14413.16, 16000,
+    ],
+    vScale: 255,
+    analysisFrameBytes: 67,
+    analysisBlobMagic: 'SABN',
+    analysisBlobVersion: 1,
+    clockFrameBytes: 128,
+    clockBlobMagic: 'SCBN',
+    clockBlobVersion: 1,
+    clock: {
+      fftSize: 256,
+      binCount: 128,
+      smoothingTimeConstant: 0.8,
+      minDecibels: -100,
+      maxDecibels: -30,
+      bassBinCount: 5,
+    },
+  },
+  // future: 3: { ... }
+};
+
+export function getSchema(song) {
+  const s = ANALYSIS_SCHEMAS[song.metadata.schemaVersion];
+  if (!s) throw new Error(`unknown schemaVersion: ${song.metadata.schemaVersion}`);
+  return s;
+}
 ```
 
-Fetch once at app load, not per song. The row is tiny (~1 KB) and never
-changes within a schemaVersion.
+### Why bundle and not a DB table?
+
+The values never change within a schemaVersion and the analyzer already
+hardcodes them in [src/audio.mjs](src/audio.mjs). Storing the same values in
+a DB table would:
+- Add a round-trip at app load for ~1 KB of data that can't change
+- Introduce a new failure mode (no row for current schemaVersion)
+- Require a deploy step (SQL migration) for constants the frontend must
+  know about anyway
+
+A frontend map keyed by `schemaVersion` handles multi-version song catalogs
+(e.g., during a backfill) just as well, without any of the above.
+
+### Keeping server and frontend in sync
+
+When `analyzer.mjs`'s constants change, bump `schemaVersion` in
+[src/audio.mjs](src/audio.mjs) (and in analyzer.mjs's metadata assembly) and
+add a matching entry to `ANALYSIS_SCHEMAS` on the frontend in the same
+release. The `getSchema()` helper throws loudly on unknown versions, so a
+deploy skew is caught at the first song load rather than producing silently
+wrong renders.
