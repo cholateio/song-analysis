@@ -8,6 +8,7 @@ import { analyze } from './src/audio.mjs';
 import { clockAnalyze } from './src/clock_analysis.mjs';
 import { packAnalysis, packClock } from './src/binary_pack.mjs';
 import { exists, upsertSong, uploadBlob } from './src/db.mjs';
+import { parseTitle } from './src/title.mjs';
 
 const MAX_DURATION_SEC = 12 * 60;
 
@@ -174,9 +175,16 @@ async function main() {
   const clockPath = `clock/${videoId}.bin`;
   logOk(`packed: analysis ${formatSize(analysisBlob.length)}, clock ${formatSize(clockBlob.length)}`);
 
+  const parsedTitle = parseTitle(info.title);
+  if (!parsedTitle.matched) {
+    logWarn(`title: no rule matched "${info.title}", keeping as-is`);
+  } else if (parsedTitle.title !== info.title) {
+    logOk(`title: "${info.title}" → "${parsedTitle.title}"`);
+  }
+
   const row = {
     videoId,
-    title: info.title.replaceAll('covered by 花譜', '').replaceAll('by 花譜', '').trim(),
+    title: parsedTitle.title,
     artist: info.artist,
     genre: argv.genre || null,
     releaseDate: info.releaseDate,
