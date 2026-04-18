@@ -82,6 +82,31 @@ export async function fetchMetadata(videoId) {
   };
 }
 
+async function fetchVttWithRetry(url, lang, { attempts = 4, baseMs = 2000 } = {}) {
+  // Retries on HTTP 429 (rate limit), 5xx, and network errors. Backoff schedule
+  // with attempts=4, baseMs=2000: 2s → 8s → 32s → give up. 4xx other than 429
+  // are treated as permanent (track URL malformed, expired, etc.).
+  let lastErr = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(url);
+      if (res.status === 429 || res.status >= 500) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status} (permanent)`);
+      return await res.text();
+    } catch (err) {
+      lastErr = err;
+      const permanent = /permanent/.test(err.message);
+      if (permanent || i === attempts - 1) throw err;
+      const delay = baseMs * Math.pow(4, i) + Math.floor(Math.random() * 500);
+      process.stderr.write(`! captions ${lang}: ${err.message}, retrying in ${Math.round(delay / 1000)}s (${i + 1}/${attempts - 1})\n`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+  throw lastErr;
+}
+
 export async function fetchCaptions(info) {
   const fetchOne = async (lang) => {
     const tracks = info.subtitles?.[lang];
@@ -89,9 +114,7 @@ export async function fetchCaptions(info) {
     const track = tracks.find(t => t.ext === 'vtt');
     if (!track) return { cues: null };
     try {
-      const res = await fetch(track.url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const vtt = await res.text();
+      const vtt = await fetchVttWithRetry(track.url, lang);
       const cues = parseVtt(vtt);
       return { cues: cues.length > 0 ? cues : null };
     } catch (err) {
