@@ -201,6 +201,7 @@ async function main() {
       bpm: analysis.bpm,
       bpmConfidence: analysis.bpmConfidence,
       medianCentroidHz: analysis.medianCentroidHz,
+      musicalCentroidHz: analysis.musicalCentroidHz,
       loudnessRangeLRA,
       zcrVariance: analysis.zcrVariance,
       meanSpectralContrastDb: analysis.meanSpectralContrastDb,

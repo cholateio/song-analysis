@@ -111,8 +111,11 @@ export async function analyze(pcmStream, { durationHint = 0, onProgress = null }
   const rawBinRows = new Array(totalFrames);
   const perBandMax = new Float32Array(BAND_COUNT);
   const centroidHistory = new Float32Array(totalFrames);
+  const musicalCentroidHistory = new Float32Array(totalFrames);
+  const musicalDenomHistory = new Float32Array(totalFrames);
   const zcrHistory = new Float32Array(totalFrames);
   const contrastHistory = new Float32Array(totalFrames);
+  const musicalLoBin = Math.ceil(MUSICAL_CENTROID_LO_HZ / FFT_BIN_HZ);
   let rMax = 0;
   let cMaxHz = 0;
 
@@ -138,6 +141,15 @@ export async function analyze(pcmStream, { durationHint = 0, onProgress = null }
     centroidHistory[frameIdx] = centroidHz;
     zcrHistory[frameIdx] = zcr;
     contrastHistory[frameIdx] = frameSpectralContrastDb(spectrum);
+
+    let mcNum = 0, mcDen = 0;
+    for (let k = musicalLoBin; k < spectrum.length; k++) {
+      const amp = spectrum[k];
+      mcNum += k * amp;
+      mcDen += amp;
+    }
+    musicalCentroidHistory[frameIdx] = mcDen > 0 ? (mcNum / mcDen) * FFT_BIN_HZ : 0;
+    musicalDenomHistory[frameIdx] = mcDen;
 
     const bins = new Float32Array(BAND_COUNT);
     for (let i = 0; i < BAND_COUNT; i++) {
@@ -218,6 +230,24 @@ export async function analyze(pcmStream, { durationHint = 0, onProgress = null }
   sortedCentroid.sort();
   const medianCentroidHz = sortedCentroid[Math.floor(totalFrames / 2)];
 
+  const musicalCentroidHz = (() => {
+    let denomSum = 0;
+    for (let i = 0; i < totalFrames; i++) denomSum += musicalDenomHistory[i];
+    const denomMean = denomSum / totalFrames;
+    if (!(denomMean > 0)) return null;
+    const floor = denomMean * VOCAL_CENTROID_NOISE_RATIO;
+    const valid = [];
+    for (let i = 0; i < totalFrames; i++) {
+      if (musicalDenomHistory[i] >= floor && musicalCentroidHistory[i] > 0) {
+        valid.push(musicalCentroidHistory[i]);
+      }
+    }
+    const minValid = Math.max(1, Math.floor(VOCAL_CENTROID_MIN_VALID_RATIO * totalFrames));
+    if (valid.length < minValid) return null;
+    valid.sort((a, b) => a - b);
+    return +valid[valid.length >> 1].toFixed(2);
+  })();
+
   let zcrSum = 0;
   for (let i = 0; i < totalFrames; i++) zcrSum += zcrHistory[i];
   const zcrMean = zcrSum / totalFrames;
@@ -237,6 +267,7 @@ export async function analyze(pcmStream, { durationHint = 0, onProgress = null }
     bpm,
     bpmConfidence,
     medianCentroidHz: Math.round(medianCentroidHz * 10) / 10,
+    musicalCentroidHz,
     zcrVariance: +zcrVariance.toFixed(3),
     meanSpectralContrastDb: +meanSpectralContrastDb.toFixed(2),
     vocalOnsetRate,
@@ -265,6 +296,8 @@ const MOD_NULL_ENERGY_RATIO = 0.05;
 
 const VOCAL_CENTROID_NOISE_RATIO = 0.1;
 const VOCAL_CENTROID_MIN_VALID_RATIO = 0.1;
+
+const MUSICAL_CENTROID_LO_HZ = 150;
 
 function medianAndMad(values) {
   const sorted = Float32Array.from(values);

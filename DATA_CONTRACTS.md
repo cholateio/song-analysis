@@ -113,10 +113,13 @@ type Metadata = {
 
   // Timbre / loudness (per-song scalars, 2D-map friendly)
   medianCentroidHz: number;          // median spectral centroid across frames (Hz). Brightness/warmth axis.
+  musicalCentroidHz: number | null;  // median spectral centroid with FFT bins < 150 Hz zeroed. "Perceived brightness" without sub-bass gravity.
   loudnessRangeLRA: number | null;   // EBU R128 Loudness Range (LU). null if ffmpeg ebur128 couldn't compute (very short audio)
   zcrVariance: number;               // sample variance of Meyda zcr (zero-crossings per 2048-sample frame) across all frames
   meanSpectralContrastDb: number;    // mean over frames of per-frame spectral contrast (dB) across 6 octave bands 100–12800 Hz
   vocalOnsetRate: number | null;     // onsets per second detected on vocal band (~272–3707 Hz). null only on computation error; missing (undefined) on pre-backfill rows.
+  vocalModulationHz: number | null;  // dominant envelope modulation frequency (Hz) of the vocal-band harmonic stem, 1.5–10 Hz. Syllable-rate proxy. null on silent/instrumental sections.
+  vocalCentroidHz: number | null;    // median per-frame spectral centroid restricted to vocal bands (~272–3707 Hz), in Hz. null if <10% of frames clear the noise floor.
 
   // Blob pointers
   analysisBlob: string;              // relative path inside song-blobs: "analysis/<video_id>.bin"
@@ -142,6 +145,23 @@ frameCount = floor((duration_sec * 48000 - 2048) / 800) + 1
   of the time. Use for cross-song brightness/warmth comparisons and as a 2D
   map axis. Ranges observed: ~800 Hz (warm bass-heavy) to ~4000 Hz (bright
   distorted rock).
+
+- **`musicalCentroidHz`** — same method as `medianCentroidHz` (per-frame
+  spectral centroid on the full 1024-bin `amplitudeSpectrum`, song-median),
+  except FFT bins below 150 Hz are zeroed before computing the per-frame
+  centroid. Removes sub-bass and kick-drum fundamentals from the "brightness"
+  reading so songs don't all pull toward the bass floor. Per frame the
+  surviving-bin sum is also tracked as a denom; frames where denom is below
+  10% of the song-wide mean denom are skipped (silent / sub-floor frames),
+  and `musicalCentroidHz` is `null` if fewer than 10% of frames survive.
+  Semantic pairing: `medianCentroidHz` (20 Hz–16 kHz, low-frequency gravity
+  included) vs `vocalCentroidHz` (~272–3707 Hz, vocal timbre only) vs
+  `musicalCentroidHz` (150 Hz–16 kHz, "perceived brightness" with bass
+  weight removed but cymbals / synths / vocals retained). For a J-Pop /
+  J-rock catalog expect most songs in ~1500–3500 Hz — higher than
+  `medianCentroidHz` by a roughly song-dependent offset (~300–800 Hz).
+  Additive field; rows ingested before it was added have
+  `musicalCentroidHz === undefined` until reprocessed with `--force`.
 
 - **`loudnessRangeLRA`** — EBU R128 Loudness Range in LU, produced by
   `ffmpeg -af ebur128`. Measures intra-song dynamic contrast (difference

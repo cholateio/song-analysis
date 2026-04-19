@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node --check src/audio.mjs)",
+      "Bash(node --check analyzer.mjs)"
+    ]
+  }
+}
