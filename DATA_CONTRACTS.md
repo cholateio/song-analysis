@@ -116,6 +116,7 @@ type Metadata = {
   loudnessRangeLRA: number | null;   // EBU R128 Loudness Range (LU). null if ffmpeg ebur128 couldn't compute (very short audio)
   zcrVariance: number;               // sample variance of Meyda zcr (zero-crossings per 2048-sample frame) across all frames
   meanSpectralContrastDb: number;    // mean over frames of per-frame spectral contrast (dB) across 6 octave bands 100–12800 Hz
+  vocalOnsetRate: number | null;     // onsets per second detected on vocal band (~272–3707 Hz). null only on computation error; missing (undefined) on pre-backfill rows.
 
   // Blob pointers
   analysisBlob: string;              // relative path inside song-blobs: "analysis/<video_id>.bin"
@@ -162,6 +163,62 @@ frameCount = floor((duration_sec * 48000 - 2048) / 800) + 1
   and `20·log10(peak/valley)` is averaged over the 6 bands. High contrast
   (> 20 dB) = tonal / well-separated instruments (classical, vocals); low
   contrast (< 10 dB) = noisy / wall-of-sound (distorted rock, ambient).
+
+- **`vocalOnsetRate`** — onsets per second detected on the vocal-range sub-bands
+  `v[25..49]` of the analysis blob (log-spaced bins covering ~272–3707 Hz).
+  Computed as spectral flux on the quantized, per-band peak-normalized `v[]`,
+  smoothed with a 3-tap moving average, and thresholded per-frame as
+  `max(T_min, α·thr_global + (1-α)·thr_local)` where `thr_local` uses a
+  ±2.5 s median + 1.5·MAD window, `thr_global` is the same statistic over
+  the whole song, `T_min = 2·median(smooth)` per song, and α = 0.5; peak-picked
+  with a 100 ms minimum inter-onset interval (cap 10 onsets/s). Rank-comparable
+  across songs: absolute rate reflects vocal articulation density above a
+  per-song hybrid floor. A proxy for "how often the vocal line articulates";
+  expected ranges (post hybrid-threshold, to be confirmed against catalog):
+  pure instrumental < 1.5, slow ballad ~1.5–3, mid-tempo J-Pop ~2–5,
+  fast rap / dense articulation ~5–10. **Caveat:** kick/snare energy
+  bleeds into the vocal bands and inflates the rate; for a catalog with
+  uniform band-instrumentation (e.g. a single artist's discography) the bias
+  is systematic and relative ranking is still valid. Null only when the
+  computed rate falls outside [0, 15] (sanity check); rows ingested before
+  this field was added — or before the threshold was switched from pure
+  adaptive to hybrid — have stale values until reprocessed with `--force`.
+
+- **`vocalModulationHz`** — dominant modulation frequency (Hz) of the vocal-band
+  harmonic envelope, in the 2–10 Hz syllable-rate range. Computed by applying
+  horizontal-median HPSS (kernel ≈ 0.28 s) to the 64-band log-spaced spectrogram
+  to suppress drum transients, then taking the RMS envelope of bands `[25..49]`
+  (~272–3707 Hz), Hann-windowing, FFT-ing the full-song envelope at 60 fps, and
+  reporting the energy-weighted centroid of magnitude over 2–10 Hz. Unlike
+  `vocalOnsetRate` which counts acoustic attacks, this measures how fast the
+  vocal energy itself oscillates — robust to legato vs staccato differences.
+  Expected ranges are catalog-dependent: for a broad catalog
+  (instrumental → pop → rap) expect ~1.5–8 Hz; for a narrow J-Pop / J-rock
+  catalog (e.g. 花譜 + J-rock-band) expect most songs compressed into ~2–5 Hz
+  with ballads ~1.5–2.5 and up-tempo tracks ~4–5. Null when bandpass energy
+  is <5% of total envelope power (instrumental / silent sections), when the
+  computed centroid falls outside [1.5, 10] Hz, or when the clip is shorter
+  than 2 s. Rows ingested before this field was added have
+  `vocalModulationHz === undefined` until reprocessed with `--force`.
+
+- **`vocalCentroidHz`** — median per-frame spectral centroid over the
+  vocal-band sub-bands covering ~272–3707 Hz, reported in Hz. Computed on
+  the pre-quantization 64-band Float32 spectrogram (before the per-band
+  peak-normalization that produces `v[]`), so the centroid weights bands
+  by absolute energy — a conventional DSP spectral centroid restricted to
+  the vocal band, with the coarseness of the 64-band log-spaced grid.
+  Per frame: `numer = Σ bandCenter[b] · bins[i][b]`, `denom = Σ bins[i][b]`
+  over `b ∈ [25..49]`, where `bandCenter[b] = sqrt(BAND_EDGES_HZ[b] ·
+  BAND_EDGES_HZ[b+1])` is the geometric-mean centre of each log-spaced band.
+  Frames with `denom` below 10% of the song-wide mean `denom` are skipped
+  (silent / sub-floor frames). The metric is the median of the surviving
+  frame centroids. Expected ranges are catalog-dependent; for a narrow
+  J-Pop / J-rock catalog (e.g. 花譜 + J-rock-band) expect most songs in
+  ~800–2500 Hz; a female-dominant catalog skews higher than a
+  male-dominant one. Null when fewer than 10% of frames have valid denom
+  (song is essentially silent in the vocal band) or when the song has no
+  frames. Rows ingested before this field was added have
+  `vocalCentroidHz === undefined` until reprocessed with `--force`.
 
 - **`bpmConfidence`** — `count(|interval − median| / median < 0.1) /
   count(all intervals)`. `1.0` means every detected inter-beat interval is
@@ -458,7 +515,9 @@ Lyrics (`lyrics_jp`, `lyrics_tw`) are not frame-indexed; they carry their own
   magic/version bytes unchanged (per-frame layout identical to v1); the `c`
   byte's semantics are narrowed from "absolute-Hz-recoverable" to
   "relative brightness within this song" — use `medianCentroidHz` for
-  cross-song comparison.
+  cross-song comparison. Later additive amendment: `vocalOnsetRate` added as
+  an optional metadata field without a schemaVersion bump (per §8 additive
+  rule); old rows have the field missing until reprocessed.
 - **v1**: original schema with all constants inlined per song.
 
 Planned future versions (see [LIP_SYNC_PLAN.md](LIP_SYNC_PLAN.md)) will add

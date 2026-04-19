@@ -12,7 +12,7 @@ import { parseTitle } from './src/title.mjs';
 
 const MAX_DURATION_SEC = 12 * 60;
 
-const USAGE = `Usage: node analyzer.mjs --url "<youtube-url-or-id>" [--genre <tag>] [--force] [--dry-run] [--list-captions]
+const USAGE = `Usage: node analyzer.mjs --url "<youtube-url-or-id>" [--genre <tag>] [--force] [--dry-run] [--list-captions] [--skip-lyrics]
 
 Flags
   --url            YouTube URL in any form, or a raw 11-char video ID  (required)
@@ -20,6 +20,8 @@ Flags
   --force          Reprocess even if video_id already exists in "Songs"
   --dry-run        Run the full pipeline, skip the Supabase upsert
   --list-captions  Print available caption sources for this video and exit
+  --skip-lyrics    Skip caption download entirely (lyrics columns stay null).
+                   Use when YouTube is rate-limiting caption requests.
   --help           Show this message
 
 Captions
@@ -83,7 +85,7 @@ function makeProgressReporter() {
 async function main() {
   const argv = minimist(process.argv.slice(2), {
     string: ['url', 'genre'],
-    boolean: ['force', 'dry-run', 'help', 'list-captions'],
+    boolean: ['force', 'dry-run', 'help', 'list-captions', 'skip-lyrics'],
     alias: { h: 'help' },
   });
 
@@ -131,23 +133,27 @@ async function main() {
 
   let jp = null;
   let tw = null;
-  try {
-    const result = await fetchCaptions(info);
-    jp = result.jp;
-    tw = result.tw;
-    for (const errMsg of result.errors) {
-      logWarn(`captions: ${errMsg}`);
-    }
-  } catch (err) {
-    logWarn(`captions: fetch failed (${err.message}), continuing without lyrics`);
-  }
-  const found = [];
-  if (jp) found.push(`ja (${jp.length} cues)`);
-  if (tw) found.push(`zh-TW (${tw.length} cues)`);
-  if (found.length > 0) {
-    logOk(`captions: ${found.join(', ')}`);
+  if (argv['skip-lyrics']) {
+    logWarn(`captions: skipped via --skip-lyrics; lyrics will be null`);
   } else {
-    logWarn(`captions: no official ja or zh-TW tracks; lyrics will be null`);
+    try {
+      const result = await fetchCaptions(info);
+      jp = result.jp;
+      tw = result.tw;
+      for (const errMsg of result.errors) {
+        logWarn(`captions: ${errMsg}`);
+      }
+    } catch (err) {
+      logWarn(`captions: fetch failed (${err.message}), continuing without lyrics`);
+    }
+    const found = [];
+    if (jp) found.push(`ja (${jp.length} cues)`);
+    if (tw) found.push(`zh-TW (${tw.length} cues)`);
+    if (found.length > 0) {
+      logOk(`captions: ${found.join(', ')}`);
+    } else {
+      logWarn(`captions: no official ja or zh-TW tracks; lyrics will be null`);
+    }
   }
 
   const { pcmStream, done, getFfmpegStderr } = spawnAudioPipeline(videoId);
@@ -198,6 +204,9 @@ async function main() {
       loudnessRangeLRA,
       zcrVariance: analysis.zcrVariance,
       meanSpectralContrastDb: analysis.meanSpectralContrastDb,
+      vocalOnsetRate: analysis.vocalOnsetRate,
+      vocalModulationHz: analysis.vocalModulationHz,
+      vocalCentroidHz: analysis.vocalCentroidHz,
       analysisBlob: analysisPath,
       clockBlob: clockPath,
     },
