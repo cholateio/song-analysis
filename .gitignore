@@ -7,5 +7,5 @@ urls-virtual_kaf.txt
 batch-failed-*.txt
 
 # Claude Code / multi-agent kit(本機工具設定,真理源在 kit repo)
-.claude/
+.claude/settings.local.json
 .superpowers/
