@@ -1,6 +1,6 @@
 # Data Contracts — `Songs` table + Storage blobs reference
 
-Canonical reference for everything [analyzer.mjs](analyzer.mjs) writes when it
+Canonical reference for everything [analyzer.mjs](../../analyzer.mjs) writes when it
 ingests a YouTube song. Frontend consumers should treat this file as the single
 source of truth for row shape, binary blob layout, types, ranges, and time
 alignment.
@@ -48,7 +48,7 @@ which the frontend fetches separately.
 
 Before running `analyzer.mjs`:
 
-1. **Create the `"Songs"` table.** Apply [supabase-schema.sql](supabase-schema.sql)
+1. **Create the `"Songs"` table.** Apply [supabase-schema.sql](../../supabase-schema.sql)
    via the Supabase SQL editor or CLI.
 2. **Create the `song-blobs` Storage bucket.** In the Supabase dashboard:
    - Storage → New bucket
@@ -66,7 +66,7 @@ toggle grants automatically when you mark the bucket public.
 
 ## 2. Songs table DDL
 
-See [supabase-schema.sql](supabase-schema.sql) for the exact `CREATE TABLE`.
+See [supabase-schema.sql](../../supabase-schema.sql) for the exact `CREATE TABLE`.
 Summary:
 
 | Column         | Type        | Nullable | Notes |
@@ -388,7 +388,7 @@ const bassEnergy = avg(frame.v, bassIdx);
 ## 5. Clock-analysis binary blob — `song-blobs/clock/<video_id>.bin`
 
 Row-aligned with the analysis blob: frame `i` in both blobs describes the same
-instant. See [CLOCK_ANALYSIS_HANDOVER.md](CLOCK_ANALYSIS_HANDOVER.md) for the
+instant. See [clock-analysis-handover.md](clock-analysis-handover.md) for the
 rationale and the AnalyserNode spec details.
 
 ### Layout
@@ -481,7 +481,7 @@ type LyricsTrack = LyricCue[] | null;
 - **Cues are line-level** — `s` marks the start of a phrase, not of a word.
   Expect phrase durations of ~2–5 seconds, not per-syllable timing.
 - Inline word-level timing markers (`<HH:MM:SS.mmm>`) that some YouTube tracks
-  include are stripped in [src/youtube.mjs `parseVtt`](src/youtube.mjs).
+  include are stripped in [src/youtube.mjs `parseVtt`](../../src/youtube.mjs).
 - Cues are deduplicated when consecutive blocks repeat the same text.
 - Cues arrive in chronological order.
 
@@ -540,7 +540,7 @@ Lyrics (`lyrics_jp`, `lyrics_tw`) are not frame-indexed; they carry their own
   rule); old rows have the field missing until reprocessed.
 - **v1**: original schema with all constants inlined per song.
 
-Planned future versions (see [LIP_SYNC_PLAN.md](LIP_SYNC_PLAN.md)) will add
+Planned future versions (see [lip-sync-pipeline.md](../plans/lip-sync-pipeline.md)) will add
 isolated-vocal-derived fields to the analysis frame — those will extend the
 analysis frame size and bump both the binary version byte and
 `schemaVersion`.
@@ -713,7 +713,7 @@ export function getSchema(song) {
 ### Why bundle and not a DB table?
 
 The values never change within a schemaVersion and the analyzer already
-hardcodes them in [src/audio.mjs](src/audio.mjs). Storing the same values in
+hardcodes them in [src/audio.mjs](../../src/audio.mjs). Storing the same values in
 a DB table would:
 - Add a round-trip at app load for ~1 KB of data that can't change
 - Introduce a new failure mode (no row for current schemaVersion)
@@ -726,7 +726,7 @@ A frontend map keyed by `schemaVersion` handles multi-version song catalogs
 ### Keeping server and frontend in sync
 
 When `analyzer.mjs`'s constants change, bump `schemaVersion` in
-[src/audio.mjs](src/audio.mjs) (and in analyzer.mjs's metadata assembly) and
+[src/audio.mjs](../../src/audio.mjs) (and in analyzer.mjs's metadata assembly) and
 add a matching entry to `ANALYSIS_SCHEMAS` on the frontend in the same
 release. The `getSchema()` helper throws loudly on unknown versions, so a
 deploy skew is caught at the first song load rather than producing silently

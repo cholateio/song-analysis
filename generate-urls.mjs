@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Generates a <url> <genre> text file for batch.mjs by scraping a YouTube
-// channel with yt-dlp. See docs/superpowers/specs/2026-04-17-generate-urls-design.md
+// channel with yt-dlp.
 
 import { spawnSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';

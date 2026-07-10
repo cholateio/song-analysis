@@ -11,7 +11,7 @@
 ## 🚀 30 秒重啟
 
 ```bash
-npm install
+pnpm install
 # 確認 .env 存在（見 .env.example：SUPABASE_URL / SUPABASE_SERVICE_KEY）
 # 確認 yt-dlp 在 PATH（不在 package.json 裡，要另外裝/更新：pip install -U yt-dlp）
 node analyzer.mjs --url "<youtube-url>" --dry-run   # 單曲試跑（不寫 DB）
@@ -31,16 +31,23 @@ node analyzer.mjs --url "<youtube-url>" --dry-run   # 單曲試跑（不寫 DB�
 ## 測試
 
 ```bash
-npm test   # node --test，目前覆蓋 src/title.test.mjs
+pnpm test   # node --test，目前覆蓋 src/title.test.mjs
 ```
+
+## 文件
+
+- `docs/reference/data-contracts.md` — `Songs` 表 + binary blob 的權威格式規格
+- `docs/reference/clock-analysis-handover.md` — clock analysis 離線移植的交接說明
+- `docs/plans/lip-sync-pipeline.md` — 唇形同步三階段計畫（**尚未實作**）
+- `docs/specs/` — spec 入口（目前空）
 
 ## 相關 repo
 
 - **kaf-observatory** — 前端消費者（3D desk / Wall Clock 視覺化）。資料契約見
-  本 repo 的 `DATA_CONTRACTS.md` 與 `CLOCK_ANALYSIS_HANDOVER.md`。
+  本 repo 的 `docs/reference/`。
 - **kaf-posts-ingest** — 同宇宙的另一條後端（X/Twitter RSS + 翻譯，互不依賴）。
 
 ## AI 接手
 
-專案裝有 multi-agent kit（v4.2）：開 `claude` 即載入工作流規則，
-專案事實見 `CLAUDE.md`。
+專案裝有 multi-agent kit（版本見 `.claude/kit-version`）：開 `claude` 即載入
+工作流規則，專案事實見 `CLAUDE.md`。

@@ -1,5 +1,5 @@
 // Binary packers for the Supabase Storage blobs.
-// See DATA_CONTRACTS.md §3 and §4 for the authoritative layout spec.
+// See docs/reference/data-contracts.md §3 and §4 for the authoritative layout spec.
 
 const HEADER_SIZE = 8;
 const BIN_VERSION = 1;

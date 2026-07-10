@@ -1,6 +1,6 @@
 # song-analysis
 
-> CLAUDE.md（kit v4.2）。本檔只放專案內容；workflow / 派工 / review 規則由
+> CLAUDE.md（kit 版本見 `.claude/kit-version`）。本檔只放專案內容；workflow / 派工 / review 規則由
 > `.claude/rules/` 自動載入（kit-owned），見檔尾「Multi-agent kit」路由表。
 
 ## Project goal
@@ -8,8 +8,8 @@
 花譜（KAF）cover 曲的 YouTube ingest + 音訊分析 pipeline：用 yt-dlp 抓音訊與
 字幕 → Meyda 做每幀 spectrum 分析 → 打包成 binary blob 連同歌詞寫入 Supabase
 （`Songs` 表 + `song-blobs` storage bucket），供 3D 前端視覺化消費。前端消費者
-為 **kaf-observatory**（本 repo 的 `CLOCK_ANALYSIS_HANDOVER.md` 對應其
-`docs/reference/clock-analysis-handover.md`；歷史名 virtual-music-clock）。
+為 **kaf-observatory**（本 repo 的 `docs/reference/clock-analysis-handover.md`
+對應其同名檔；歷史名 virtual-music-clock）。
 
 ## Stack
 
@@ -19,7 +19,7 @@
 - Datastore: Supabase Postgres `Songs` 表 + Storage bucket `song-blobs`（DDL 見 `supabase-schema.sql`）
 - Run: `node analyzer.mjs --url "<youtube-url>" [--genre <tag>] [--force] [--dry-run]`
 - Batch: `node batch.mjs urls.txt [--sleep <sec>]`（無人值守整夜批次，含限流退避）
-- Test: `npm test`（node --test，跑 `src/title.test.mjs`）
+- Test: `pnpm test`（node --test，跑 `src/title.test.mjs`）
 
 ## File layout
 
@@ -31,8 +31,10 @@
 - `src/clock_analysis.mjs` — 前端 live FFT 的離線移植版
 - `src/binary_pack.mjs` — binary blob 打包；`src/db.mjs` — Supabase client / upsert
 - `src/title.mjs`（+ .test.mjs）— 花譜曲名正規化（前端 A-Z 索引用）
-- `supabase-schema.sql` — DB DDL；`DATA_CONTRACTS.md` / `CLOCK_ANALYSIS_HANDOVER.md` /
-  `LIP_SYNC_PLAN.md` — 給前端的交接文件
+- `supabase-schema.sql` — DB DDL
+- `docs/reference/` — 給前端的交接文件（`data-contracts.md`＝資料格式權威來源、
+  `clock-analysis-handover.md`）
+- `docs/plans/lip-sync-pipeline.md` — 唇形同步三階段計畫，**尚未實作**
 - `docs/specs/` — spec 入口（目前空）
 
 ## Project-specific constraints（禁區與硬規則）

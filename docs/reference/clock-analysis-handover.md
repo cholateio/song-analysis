@@ -9,7 +9,7 @@ client.
 
 ## 1. How the original clock samples audio
 
-See [virtual-music-clock/app/audio-engine/page.jsx](virtual-music-clock/app/audio-engine/page.jsx).
+See `virtual-music-clock/app/audio-engine/page.jsx`.
 It does **not** implement FFT itself — it just calls one Web Audio API method
 on a loop:
 
@@ -51,14 +51,14 @@ Then `bass` is just the mean of `frequencies[0..4]`. That's the whole pipeline.
 ## 2. What the offline analyzer does
 
 Node.js has no Web Audio API, so "copy verbatim" means reimplementing those six
-steps by hand. That's [src/clock_analysis.mjs](src/clock_analysis.mjs).
+steps by hand. That's [src/clock_analysis.mjs](../../src/clock_analysis.mjs).
 
 | Spec step                                | Implementation |
 |------------------------------------------|----------------|
-| Blackman coefficients `0.42 / 0.5 / 0.08`, precomputed | [clock_analysis.mjs:48-59](src/clock_analysis.mjs#L48-L59) |
-| Radix-2 Cooley–Tukey FFT (256-point)     | [clock_analysis.mjs:63-99](src/clock_analysis.mjs#L63-L99) |
-| `1/N` normalize, τ=0.8 smoothing, `20·log10`, byte clamp | [clock_analysis.mjs:135-152](src/clock_analysis.mjs#L135-L152) |
-| Emits `{ frequencies }` — `bass` is omitted offline (client derives it; see §5) | [clock_analysis.mjs:154](src/clock_analysis.mjs#L154) |
+| Blackman coefficients `0.42 / 0.5 / 0.08`, precomputed | [clock_analysis.mjs:48-59](../../src/clock_analysis.mjs#L48-L59) |
+| Radix-2 Cooley–Tukey FFT (256-point)     | [clock_analysis.mjs:63-99](../../src/clock_analysis.mjs#L63-L99) |
+| `1/N` normalize, τ=0.8 smoothing, `20·log10`, byte clamp | [clock_analysis.mjs:135-152](../../src/clock_analysis.mjs#L135-L152) |
+| Emits `{ frequencies }` — `bass` is omitted offline (client derives it; see §5) | [clock_analysis.mjs:154](../../src/clock_analysis.mjs#L154) |
 
 Constants (`smoothingTimeConstant`, `minDecibels`, `maxDecibels`, fftSize, bass
 bin count) are pinned to AnalyserNode defaults. Nothing is tunable.
@@ -70,7 +70,7 @@ they don't touch the math. The `INPUT_GAIN` item is the one deliberate
 departure from the AnalyserNode defaults, explained below.
 
 - **Input source.** Instead of a microphone stream, we read mono 48 kHz float32
-  PCM from `yt-dlp | ffmpeg -f f32le -ac 1 -ar 48000` ([src/youtube.mjs](src/youtube.mjs)).
+  PCM from `yt-dlp | ffmpeg -f f32le -ac 1 -ar 48000` ([src/youtube.mjs](../../src/youtube.mjs)).
 - **Pre-FFT input gain (`INPUT_GAIN = 0.3`).** The live clock's mic picks up
   speaker output through the room, which attenuates the signal by roughly
   −6 to −10 dB of loopback plus the mic's own gain staging. Reading full-scale
@@ -86,12 +86,12 @@ departure from the AnalyserNode defaults, explained below.
   time. Offline we step through samples with `HOP = 48000 / 60 = 800`; frame
   `i` takes `samples[i*HOP .. i*HOP + 256)` as its 256-sample window.
 - **Frame count aligned with `analysis`.** `totalFrames` uses the same formula
-  as [src/audio.mjs](src/audio.mjs), so `analysis[i]` and `clock_analysis[i]`
+  as [src/audio.mjs](../../src/audio.mjs), so `analysis[i]` and `clock_analysis[i]`
   describe the same instant and can be read in lockstep.
 - **Smoothing state.** `Ŷ_prev` starts at 0 and carries across frames — matches
   the spec's "first call smooths against 0" behaviour, so the first few frames
   ease in from silence exactly like the live clock on startup.
-- **PCM reuse.** `analyze()` in [src/audio.mjs](src/audio.mjs) now returns the
+- **PCM reuse.** `analyze()` in [src/audio.mjs](../../src/audio.mjs) now returns the
   decoded `samples` so both the Meyda-based `analysis` and the clock analysis
   share one decode pass.
 
@@ -103,7 +103,7 @@ departure from the AnalyserNode defaults, explained below.
 - No alternative window function — it's Blackman, not Hann/Hamming.
 - No changes to `minDecibels / maxDecibels / smoothingTimeConstant`.
 - No 64-band downsampling. That happens in
-  [virtual-music-clock/app/page.js](virtual-music-clock/app/page.js) on the
+  `virtual-music-clock/app/page.js` on the
   render side with a 0.15 lerp — copy that verbatim on the frontend if you
   want the identical look; don't bake it into the stored data.
 - No touching of the 5-bin bass average.
@@ -124,7 +124,7 @@ song-blobs/clock/<video_id>.bin
 ```
 
 The row's `metadata.clockBlob` field carries the relative path (e.g.
-`"clock/dQw4w9WgXcQ.bin"`). See [DATA_CONTRACTS.md §5](DATA_CONTRACTS.md) for
+`"clock/dQw4w9WgXcQ.bin"`). See [data-contracts.md §5](data-contracts.md) for
 the authoritative binary layout spec; in short:
 
 ```
@@ -259,7 +259,7 @@ gzip-compresses binary content when the client requests it, though gzip's
 win on byte-dense uint8 data is modest (~10–20%).
 
 For a combined row + both blobs size estimate (analysis + clock), see
-[DATA_CONTRACTS.md §9](DATA_CONTRACTS.md).
+[data-contracts.md §9](data-contracts.md).
 
 ---
 

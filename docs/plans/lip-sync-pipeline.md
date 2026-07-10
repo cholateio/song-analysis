@@ -1,5 +1,10 @@
 # Lip-Sync Pipeline Implementation Plan
 
+> **Status: not started.** No tier of this plan has been implemented. As of the
+> current tree `BIN_VERSION` is 1, `metadata.schemaVersion` is 2, and the repo
+> contains no Demucs, MFCC, or viseme code. Treat every "Preconditions" block
+> below as unmet.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a virtual singer whose mouth shape automatically matches the singing voice — no manual animation, no per-song tuning.
@@ -9,15 +14,15 @@
 **Tech Stack:**
 - Backend pipeline: existing Node.js analyzer (`analyzer.mjs` + `src/audio.mjs` + `src/binary_pack.mjs`), new Python subprocess step (Demucs v4 `htdemucs`), Meyda (MFCC extraction)
 - Frontend: Three.js + VRM model with blendshapes `aa / ih / ou / ee / oh`
-- Storage: existing Supabase `song-blobs` Storage bucket; new tiers extend the analysis binary frame layout and bump both the blob version byte and `metadata.schemaVersion`. See [DATA_CONTRACTS.md §8](DATA_CONTRACTS.md) for the versioning protocol.
+- Storage: existing Supabase `song-blobs` Storage bucket; new tiers extend the analysis binary frame layout and bump both the blob version byte and `metadata.schemaVersion`. See [data-contracts.md §8](../reference/data-contracts.md) for the versioning protocol.
 
 > **Note on binary format evolution.** Each tier adds new bytes to the
-> per-frame layout defined in [DATA_CONTRACTS.md §4](DATA_CONTRACTS.md). The
+> per-frame layout defined in [data-contracts.md §4](../reference/data-contracts.md). The
 > detailed code samples in Tier 1 and Tier 2 below describe the feature
 > extraction logic (Demucs + Meyda MFCC) but reference the pre-binary
 > in-memory frame shape for readability. When a tier is actually implemented,
-> update [src/binary_pack.mjs](src/binary_pack.mjs) to write the new fields
-> and bump `BIN_VERSION`; [DATA_CONTRACTS.md](DATA_CONTRACTS.md) must be
+> update [src/binary_pack.mjs](../../src/binary_pack.mjs) to write the new fields
+> and bump `BIN_VERSION`; [data-contracts.md](../reference/data-contracts.md) must be
 > updated in the same commit.
 
 ---
@@ -31,10 +36,10 @@
 | Per-frame 60 FPS spectrum `v[64]` (uint8) | `song-blobs/analysis/<video_id>.bin` (bytes 0–63 of each frame) | All tiers |
 | Per-frame RMS `r`, spectral centroid `c`, beat `k` | Same blob, bytes 64–66 of each frame | Tier 0 fallback |
 | Log band edges `bandEdges[65]` | `metadata.bandEdges` | Tier 0 vocal-band derivation |
-| Binary packer | [src/binary_pack.mjs](src/binary_pack.mjs) | Tier 1 / Tier 2 frame extension |
-| YouTube audio pipeline | [src/youtube.mjs](src/youtube.mjs) `spawnAudioPipeline()` | Tier 1 integration point |
-| Analyzer entry point | [analyzer.mjs](analyzer.mjs) | Tier 1, Tier 2 |
-| Meyda feature extraction | [src/audio.mjs](src/audio.mjs) `analyze()` | Tier 2 MFCC |
+| Binary packer | [src/binary_pack.mjs](../../src/binary_pack.mjs) | Tier 1 / Tier 2 frame extension |
+| YouTube audio pipeline | [src/youtube.mjs](../../src/youtube.mjs) `spawnAudioPipeline()` | Tier 1 integration point |
+| Analyzer entry point | [analyzer.mjs](../../analyzer.mjs) | Tier 1, Tier 2 |
+| Meyda feature extraction | [src/audio.mjs](../../src/audio.mjs) `analyze()` | Tier 2 MFCC |
 
 ### What we don't have
 
@@ -45,7 +50,7 @@
 
 ### Non-goals (explicit)
 
-- **No Whisper / WhisperX transcription.** Word-level timestamps on sung Japanese audio are ±100–300 ms — too coarse for 60 FPS mouth animation. YouTube ja captions are also line-level only and parser deliberately strips inline timing (see [src/youtube.mjs:148](src/youtube.mjs#L148)).
+- **No Whisper / WhisperX transcription.** Word-level timestamps on sung Japanese audio are ±100–300 ms — too coarse for 60 FPS mouth animation. YouTube ja captions are also line-level only and parser deliberately strips inline timing (see [src/youtube.mjs:148](../../src/youtube.mjs#L148)).
 - **No MFA (Montreal Forced Aligner).** Requires exact lyric text matching sung content; YouTube captions are often paraphrased.
 - **No per-syllable Japanese kana alignment.** Replaced by spectral viseme classification in Tier 2, which does not depend on text.
 - **No real-time source separation in the browser.** Demucs is backend-only, one-off per song.
@@ -64,13 +69,13 @@ No backend or schema changes. Ships as a ~60-line JS helper that any consumer of
 
 - **Create:** `src/vocal_separation.mjs` — wraps Python subprocess, returns path to isolated vocal WAV
 - **Create:** `scripts/run_demucs.py` — tiny Python entry script invoking Demucs programmatically
-- **Modify:** [analyzer.mjs](analyzer.mjs) — call `separateVocals()` before `analyze()`, run analyzer twice (once on mix for existing fields, once on vocal for `rVoc`)
-- **Modify:** [src/audio.mjs](src/audio.mjs) — add optional second-pass mode that extracts only vocal-RMS features (skips full spectrum re-computation)
-- **Create:** `docs/demucs-setup.md` — one-page Python env setup (venv + `pip install demucs`)
+- **Modify:** [analyzer.mjs](../../analyzer.mjs) — call `separateVocals()` before `analyze()`, run analyzer twice (once on mix for existing fields, once on vocal for `rVoc`)
+- **Modify:** [src/audio.mjs](../../src/audio.mjs) — add optional second-pass mode that extracts only vocal-RMS features (skips full spectrum re-computation)
+- **Create:** `docs/reference/demucs-setup.md` — one-page Python env setup (venv + `pip install demucs`)
 
 ### Tier 2 — spectral viseme features
 
-- **Modify:** [src/audio.mjs](src/audio.mjs) — extend second-pass analyzer to extract `mfcc[13]` per frame from isolated vocal, uint8 quantized
+- **Modify:** [src/audio.mjs](../../src/audio.mjs) — extend second-pass analyzer to extract `mfcc[13]` per frame from isolated vocal, uint8 quantized
 - **Create:** `scripts/train-viseme-classifier.mjs` — one-off trainer: loads labeled reference vowel samples, fits 5-centroid k-means on MFCC space, exports `viseme-centroids.json`
 - **Create:** `reference/vowels/` directory with 5 labeled reference clips (a/i/u/e/o sung at steady pitch, ~2 seconds each, public-domain or user-recorded)
 - **Create:** `examples/lip-sync-viseme.js` — reference client-side classifier that loads centroids + per-frame MFCCs, outputs 5 blendshape weights
@@ -137,7 +142,7 @@ guarantee.
 // from the analysis binary blob. No backend changes required.
 //
 // The caller is responsible for fetching the blob (as an ArrayBuffer) from
-// Storage first; see DATA_CONTRACTS.md §4 for the layout and a reference
+// Storage first; see docs/reference/data-contracts.md §4 for the layout and a reference
 // loadAnalysis() helper.
 //
 // Usage:
@@ -245,7 +250,7 @@ git commit -m "feat: tier 0 lip-sync MVP (client-side helper)"
 ### Task T0.2: Document the MVP data contract
 
 **Files:**
-- Modify: [LIP_SYNC_PLAN.md](LIP_SYNC_PLAN.md) — add a "Using the MVP" block showing Three.js integration
+- Modify: [docs/plans/lip-sync-pipeline.md](lip-sync-pipeline.md) — add a "Using the MVP" block showing Three.js integration
 
 - [ ] **Step 1: Append a Three.js integration example to this plan doc**
 
@@ -294,7 +299,7 @@ function tick() {
 - [ ] **Step 2: Commit**
 
 ```bash
-git add LIP_SYNC_PLAN.md
+git add docs/plans/lip-sync-pipeline.md
 git commit -m "docs: add MVP frontend integration example"
 ```
 
@@ -309,7 +314,7 @@ git commit -m "docs: add MVP frontend integration example"
 **Effort:** ~2–3 days. New Python dependency (Demucs + torch). CPU inference is ~2–5× realtime; a 4-minute song takes ~8–20 minutes on CPU, ~30 seconds on GPU.
 
 **Acceptance criteria:**
-- [src/binary_pack.mjs](src/binary_pack.mjs) `ANALYSIS_FRAME_SIZE` is 68 and `BIN_VERSION` is 2.
+- [src/binary_pack.mjs](../../src/binary_pack.mjs) `ANALYSIS_FRAME_SIZE` is 68 and `BIN_VERSION` is 2.
 - `analyzer.mjs --url <url>` writes blobs whose per-frame byte 67 is `rVoc` in [0, 255].
 - `metadata.schemaVersion === 2` and `metadata.vocalIsolation === 'demucs-htdemucs-v4'` on new rows.
 - Frontend code validates the version byte and reads byte 67 as `rVoc / 255`.
@@ -320,14 +325,14 @@ git commit -m "docs: add MVP frontend integration example"
 > **Binary-format note.** The code samples in the tasks below describe Demucs
 > integration and the Meyda RMS extraction. When implementing, the final step
 > of each pass is to write the `rVoc` byte at offset 67 inside
-> [src/binary_pack.mjs](src/binary_pack.mjs) and bump both `BIN_VERSION` and
-> `metadata.schemaVersion`. [DATA_CONTRACTS.md §4](DATA_CONTRACTS.md) must be
+> [src/binary_pack.mjs](../../src/binary_pack.mjs) and bump both `BIN_VERSION` and
+> `metadata.schemaVersion`. [data-contracts.md §4](../reference/data-contracts.md) must be
 > updated in the same commit.
 
 ### Task T1.1: Python environment setup docs
 
 **Files:**
-- Create: `docs/demucs-setup.md`
+- Create: `docs/reference/demucs-setup.md`
 
 - [ ] **Step 1: Write the setup doc**
 
@@ -380,7 +385,7 @@ On Windows: `DEMUCS_PYTHON=C:\Users\...\song-analysis\.venv-demucs\Scripts\pytho
 - [ ] **Step 2: Commit**
 
 ```bash
-git add docs/demucs-setup.md
+git add docs/reference/demucs-setup.md
 git commit -m "docs: demucs python setup"
 ```
 
@@ -552,7 +557,7 @@ git commit -m "feat: node wrapper for demucs subprocess"
 ### Task T1.4: Extend audio analyzer to compute vocal-only RMS per frame
 
 **Files:**
-- Modify: [src/audio.mjs](src/audio.mjs) — add `analyzeVocalRms(samples)` function that runs the same HOP/BUFFER loop but only extracts RMS, returning uint8 quantized array
+- Modify: [src/audio.mjs](../../src/audio.mjs) — add `analyzeVocalRms(samples)` function that runs the same HOP/BUFFER loop but only extracts RMS, returning uint8 quantized array
 
 - [ ] **Step 1: Add the second-pass function**
 
@@ -625,8 +630,8 @@ git commit -m "feat: analyzeVocalRms second-pass for isolated vocal"
 ### Task T1.5: Wire vocal separation into the main analyzer
 
 **Files:**
-- Modify: [analyzer.mjs](analyzer.mjs) — add vocal separation step, load vocal WAV via ffmpeg, feed to `analyzeVocalRms`, merge `rVoc` into analysis frames
-- Modify: [src/youtube.mjs](src/youtube.mjs) — expose a helper that saves decoded PCM to a WAV file on disk (needed as Demucs input)
+- Modify: [analyzer.mjs](../../analyzer.mjs) — add vocal separation step, load vocal WAV via ffmpeg, feed to `analyzeVocalRms`, merge `rVoc` into analysis frames
+- Modify: [src/youtube.mjs](../../src/youtube.mjs) — expose a helper that saves decoded PCM to a WAV file on disk (needed as Demucs input)
 
 - [ ] **Step 1: Add a PCM-to-WAV helper in src/youtube.mjs**
 
@@ -837,7 +842,7 @@ git commit -m "feat: MVP helper prefers rVoc when present"
 **Known risk:** the 5-vowel k-means classifier is the research-y part. We budget time for tuning and may need to iterate the reference samples. Mitigation: ship T2 behind a feature flag and A/B against the T1 open/closed mouth until the classifier is visually acceptable.
 
 **Acceptance criteria:**
-- [src/binary_pack.mjs](src/binary_pack.mjs) `ANALYSIS_FRAME_SIZE` is 81 and `BIN_VERSION` is 3.
+- [src/binary_pack.mjs](../../src/binary_pack.mjs) `ANALYSIS_FRAME_SIZE` is 81 and `BIN_VERSION` is 3.
 - Bytes 68..80 of each frame are the uint8 quantized 13-element MFCC vector.
 - `metadata.schemaVersion === 3`, `metadata.mfccCount === 13`, `metadata.mfccMinDb`, `metadata.mfccMaxDb` present.
 - `viseme-centroids.json` ships in the repo (computed once, committed).
@@ -848,13 +853,13 @@ git commit -m "feat: MVP helper prefers rVoc when present"
 > **Binary-format note.** Same as Tier 1: the task code samples below describe
 > the Meyda MFCC extraction and the k-means classifier logic. When
 > implementing, append the 13 MFCC bytes at offset 68 in
-> [src/binary_pack.mjs](src/binary_pack.mjs), bump `BIN_VERSION` to 3 and
-> `metadata.schemaVersion` to 3, and update [DATA_CONTRACTS.md §4](DATA_CONTRACTS.md).
+> [src/binary_pack.mjs](../../src/binary_pack.mjs), bump `BIN_VERSION` to 3 and
+> `metadata.schemaVersion` to 3, and update [data-contracts.md §4](../reference/data-contracts.md).
 
 ### Task T2.1: Extend the second-pass analyzer with MFCC extraction
 
 **Files:**
-- Modify: [src/audio.mjs](src/audio.mjs) — replace `analyzeVocalRms` with `analyzeVocal` that returns both `rVoc` and `voc[13]` per frame
+- Modify: [src/audio.mjs](../../src/audio.mjs) — replace `analyzeVocalRms` with `analyzeVocal` that returns both `rVoc` and `voc[13]` per frame
 
 - [ ] **Step 1: Replace analyzeVocalRms**
 
@@ -961,7 +966,7 @@ git commit -m "feat: analyzeVocal extracts mfcc + rVoc"
 ### Task T2.2: Wire MFCC into analyzer.mjs
 
 **Files:**
-- Modify: [analyzer.mjs](analyzer.mjs) — update the Tier 1 block from T1.5 to call `analyzeVocal` and merge both `rVoc` and `voc`; write MFCC metadata
+- Modify: [analyzer.mjs](../../analyzer.mjs) — update the Tier 1 block from T1.5 to call `analyzeVocal` and merge both `rVoc` and `voc`; write MFCC metadata
 
 - [ ] **Step 1: Replace the vocal isolation block**
 
@@ -1280,7 +1285,7 @@ function tick() {
 - [ ] **Step 3: Commit**
 
 ```bash
-git add examples/lip-sync-viseme.js LIP_SYNC_PLAN.md
+git add examples/lip-sync-viseme.js docs/plans/lip-sync-pipeline.md
 git commit -m "feat: tier 2 viseme classifier client reference"
 ```
 
@@ -1354,8 +1359,8 @@ Each tier is additive in the sense that newer versions append bytes to the
 analysis frame. Consumers gate behavior on `metadata.schemaVersion` and the
 blob version byte.
 
-- **Roll back T2:** revert the T2 commits to [src/binary_pack.mjs](src/binary_pack.mjs)
-  (`ANALYSIS_FRAME_SIZE` 81 → 68) and [src/audio.mjs](src/audio.mjs) (drop
+- **Roll back T2:** revert the T2 commits to [src/binary_pack.mjs](../../src/binary_pack.mjs)
+  (`ANALYSIS_FRAME_SIZE` 81 → 68) and [src/audio.mjs](../../src/audio.mjs) (drop
   MFCC extraction), then re-run `analyzer.mjs --force` on affected rows. The
   analyzer will write version-2 blobs. Old version-3 blobs in Storage will
   still parse via their own header byte; T2 consumers will simply never see
