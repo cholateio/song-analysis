@@ -1,0 +1,20 @@
+# PROJECT.toml — 專案 manifest(機器可讀,`proj` 指令據此做跨專案彙總)。
+# user-owned:kit 永不覆蓋。狀態/指令/付費服務改變時同步本檔,並更新 updated。
+
+name = "song-analysis"
+status = "active"          # active | mvp | done | paused | abandoned
+status_note = "ingest pipeline 穩定運作(schema v2、batch 抗限流、標題正規化皆已完成);下一步是 docs/plans/lip-sync-pipeline.md 的唇形同步,尚未開始"
+updated = 2026-07-11       # 最後一次人工確認本檔內容的日期
+
+[commands]                 # key = 用途短名;value = 可直接複製執行的指令
+single = "node analyzer.mjs --url \"<youtube-url>\" [--genre <tag>] [--force] [--dry-run]"
+batch = "node batch.mjs urls.txt [--sleep <sec>] [--no-retry]"
+scan_channel = "node generate-urls.mjs"
+lint_titles = "node lint-titles.mjs urls-virtual_kaf.txt"
+test = "pnpm test"
+
+[[paid]]
+service = "Supabase (Postgres + Storage)"
+billing = "free-tier"      # 待確認:實際用量可能超過 free tier 門檻,轉為按用量計費
+monthly_est = "?"
+cancel = "刪除 Supabase 專案,或從 .env 移除 SUPABASE_URL / SUPABASE_SERVICE_KEY 停用寫入"
