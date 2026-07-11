@@ -11,7 +11,6 @@ single = "node analyzer.mjs --url \"<youtube-url>\" [--genre <tag>] [--force] [-
 batch = "node batch.mjs urls.txt [--sleep <sec>] [--no-retry]"
 scan_channel = "node generate-urls.mjs"
 lint_titles = "node lint-titles.mjs urls-virtual_kaf.txt"
-test = "pnpm test"
 
 [[paid]]
 service = "Supabase (Postgres + Storage)"
