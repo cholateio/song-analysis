@@ -13,7 +13,7 @@ scan_channel = "node generate-urls.mjs"
 lint_titles = "node lint-titles.mjs urls-virtual_kaf.txt"
 
 [[paid]]
-service = "Supabase (Postgres + Storage)"
+service = "Supabase"   # Postgres + Storage
 billing = "free-tier"      # user 2026-07-11 確認未付費
 monthly_est = "$0"
 cancel = "刪除 Supabase 專案,或從 .env 移除 SUPABASE_URL / SUPABASE_SERVICE_KEY 停用寫入"
