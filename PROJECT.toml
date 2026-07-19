@@ -3,14 +3,12 @@
 
 name = "song-analysis"
 status = "active"          # active | mvp | done | paused | abandoned
-status_note = "ingest pipeline 穩定運作(schema v2、batch 抗限流、標題正規化皆已完成);下一步是 docs/plans/lip-sync-pipeline.md 的唇形同步,尚未開始"
-updated = 2026-07-11       # 最後一次人工確認本檔內容的日期
+status_note = "ingest pipeline 完成並穩定運作(單曲/批次/標題正規化);下一步唇形同步,尚未開始"
+updated = 2026-07-20       # 最後一次人工確認本檔內容的日期
 
 [commands]                 # key = 用途短名;value = 可直接複製執行的指令
+# 批次/掃頻道/lint 是餵資料的內部步驟,不是「用它」的入口,見 README
 single = "node analyzer.mjs --url \"<youtube-url>\" [--genre <tag>] [--force] [--dry-run]"
-batch = "node batch.mjs urls.txt [--sleep <sec>] [--no-retry]"
-scan_channel = "node generate-urls.mjs"
-lint_titles = "node lint-titles.mjs urls-virtual_kaf.txt"
 
 [[paid]]
 service = "Supabase"   # Postgres + Storage
