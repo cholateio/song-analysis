@@ -2,8 +2,8 @@
 # user-owned:kit 永不覆蓋。狀態/指令/付費服務改變時同步本檔,並更新 updated。
 
 name = "song-analysis"
-status = "active"          # active | mvp | done | paused | abandoned
-status_note = "ingest pipeline 完成並穩定運作(單曲/批次/標題正規化);下一步唇形同步,尚未開始"
+status = "idle"            # active | mvp | idle | done | paused | abandoned
+status_note = "ingest 完成,曲庫已同步至頻道最新;無主動開發,有新片再跑"
 updated = 2026-07-20       # 最後一次人工確認本檔內容的日期
 
 [commands]                 # key = 用途短名;value = 可直接複製執行的指令
