@@ -86,6 +86,15 @@ https://youtu.be/abc12345678
   太差）。兩軌都沒有時 **lyrics 留 null，音訊分析照樣存**——那不算失敗。
 - **重跑要 `--force`**：video_id 已存在就直接跳過，安靜地什麼都不做。
 - **`generate-urls.mjs` 的預設輸出是 `urls-virtual_kaf.txt`**，不是 `urls.txt`。
+- **⚠️ `urls-virtual_kaf.txt` 是 gitignored，而 `generate-urls.mjs` 是全量覆蓋寫檔。**
+  檔案結尾的 4 支是手動補的 Live Ver.（`NDOJZSG9SPU` / `g8NbvGE8w6s` /
+  `9BPNC-SkOd8` / `GMK3nurbnWc`），它們**不通過 `shouldSkip()` 的 live 過濾**——
+  重跑一次掃描就永久消失，且無 git 可回溯。要重生成前先備份這幾行。
+  （保留理由：這 4 首在頻道上沒有 studio 版，刪掉等於該曲從資料庫消失。）
+- **同一支影片有兩個標題**：yt-dlp 掃頻道（`--flat-playlist`）拿到的是英文標題，
+  單片 `fetchMetadata` 拿到的是日文標題（YouTube 多語言標題功能）。入庫的是日文那個。
+  拿頻道清單跟 DB 對帳時會對不起來——2026-07-20 實例：頻道顯示
+  `KAF #171 - School Wars`，入庫是「花譜 ＃171「学園戦線」」。
 - **版本號有兩個且獨立**：blob 的 `BIN_VERSION` 目前 1，row 的
   `metadata.schemaVersion` 目前 2。改 binary layout 要 bump 並在同一個 commit
   更新 `docs/reference/data-contracts.md`。
