@@ -19,13 +19,15 @@
 - Datastore: Supabase Postgres `Songs` 表 + Storage bucket `song-blobs`（DDL 見 `supabase-schema.sql`）
 - Run: `node analyzer.mjs --url "<youtube-url>" [--genre <tag>] [--force] [--dry-run]`
 - Batch: `node batch.mjs urls.txt [--sleep <sec>]`（無人值守整夜批次，含限流退避）
-- Test: `pnpm test`（node --test，跑 `src/title.test.mjs`）
+- Test: `pnpm test`（node --test，跑 `src/title.test.mjs`、`generate-urls.test.mjs`）
 
 ## File layout
 
 - `analyzer.mjs` — CLI 進入點（單曲 ingest）
 - `batch.mjs` — 依序批次跑 urls.txt
-- `generate-urls.mjs` — 用 yt-dlp 掃 YouTube 頻道（`@virtual_kaf`）產出 urls
+- `generate-urls.mjs` — 用 yt-dlp 掃 YouTube 頻道（`@virtual_kaf`）產出 urls；
+  過濾例外寫在 `KEEP_IDS`（強制保留）／`DROP_IDS`（強制排除），產出的 txt
+  是 gitignored 純產物，不要手改
 - `lint-titles.mjs` — 標題 dry-run 檢查
 - `src/youtube.mjs` — yt-dlp wrapper；`src/audio.mjs` — Meyda spectrum 抽取
 - `src/clock_analysis.mjs` — 前端 live FFT 的離線移植版

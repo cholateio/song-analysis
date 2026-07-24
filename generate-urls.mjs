@@ -14,7 +14,36 @@ export function classify(title) {
   return 'album';
 }
 
-export function shouldSkip({ duration, title }) {
+// These clips have no studio version on the channel, so the 'Live Ver' title
+// filter below would drop the song from the DB entirely. Keyed by video id
+// because the channel scan and the single-video query return different-language
+// titles for the same video (see docs/LESSONS.md 2026-07-20).
+export const KEEP_IDS = new Set([
+  'NDOJZSG9SPU', // 花譜 #36「不可解」Live Ver.
+  'g8NbvGE8w6s', // 花譜 #69「まほう feat.理芽」Live Ver.
+  '9BPNC-SkOd8', // 花譜 #71「雛鳥 with ヰ世界情緒」Live Ver.
+  'GMK3nurbnWc', // 花譜 #73「命に嫌われている。 with 春猿火」Live Ver.
+]);
+
+// Announcement / anniversary clips, not songs. They pass every filter below
+// (125-600s, no Trailer/Live Ver in the title), so without this list every
+// rescan resurrects them and batch.mjs ingests them as songs.
+export const DROP_IDS = new Set([
+  '4il0GPyK6zg', // 花譜 #35「観測-御披露目篇-」
+  'QqCM53KSLzw', // 花譜 #52「深化」
+  'Z7qLxHSmKEw', // 花譜 #66「不可解弐Q1御礼」
+  'YmzoLsHPgbc', // 花譜 #72「新年」
+  'IpYrEWRfRbo', // 花譜 #74「1億回御礼」
+  'eJ4YS4Cxg6k', // 花譜 #78「不可解弐REBUILDING -御願編-」
+  '8BrhlBCIbko', // 花譜 #104「不可解参狂開催」
+  '99KCXIhAS9U', // 花譜 #121「不可解参(想) -御礼-」
+  'vqGo8rPOqfg', // 花譜 7周年記念動画 - メモリアル編 -
+  'DH5ZzhtV2_I', // 花譜 #157「新年」
+]);
+
+export function shouldSkip({ id, duration, title }) {
+  if (id != null && DROP_IDS.has(id)) return { skip: true, reason: 'dropped' };
+  if (id != null && KEEP_IDS.has(id)) return { skip: false };
   if (duration == null) return { skip: true, reason: 'no-duration' };
   if (duration < 125 || duration > 600) return { skip: true, reason: 'short' };
   if (title.includes('Trailer')) return { skip: true, reason: 'trailer' };
@@ -93,9 +122,9 @@ function main(argv) {
   process.stderr.write(`Fetched ${entries.length} entries.\n`);
 
   const kept = [];
-  const reasons = { short: 0, 'no-duration': 0, trailer: 0, live: 0 };
+  const reasons = { short: 0, 'no-duration': 0, trailer: 0, live: 0, dropped: 0 };
   for (const e of entries) {
-    const s = shouldSkip({ duration: e.duration, title: e.title ?? '' });
+    const s = shouldSkip({ id: e.id, duration: e.duration, title: e.title ?? '' });
     if (s.skip) {
       if (s.reason === 'no-duration') {
         process.stderr.write(`warn: skipping entry id=${e.id} (no duration field)\n`);
@@ -109,11 +138,11 @@ function main(argv) {
 
   writeFileSync(args.out, kept.join('\n') + (kept.length ? '\n' : ''), 'utf8');
 
-  const skipped = reasons.short + reasons['no-duration'] + reasons.trailer + reasons.live;
+  const skipped = reasons.short + reasons['no-duration'] + reasons.trailer + reasons.live + reasons.dropped;
   process.stderr.write(
     `Done: kept ${kept.length}, skipped ${skipped} ` +
     `(short: ${reasons.short}, no-duration: ${reasons['no-duration']}, ` +
-    `trailer: ${reasons.trailer}, live: ${reasons.live}), ` +
+    `trailer: ${reasons.trailer}, live: ${reasons.live}, dropped: ${reasons.dropped}), ` +
     `total fetched ${entries.length}. Wrote ${args.out}.\n`,
   );
 }

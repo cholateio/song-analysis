@@ -32,7 +32,7 @@ node analyzer.mjs --url "<youtube-url>" --dry-run   # 單曲試跑，不寫 DB
 | `node generate-urls.mjs` | 掃 `@virtual_kaf` 頻道 → 產出 `urls-virtual_kaf.txt` |
 | `node lint-titles.mjs urls-virtual_kaf.txt` | 標題正規化 dry-run 檢查（不動 DB） |
 | `node batch.mjs urls-virtual_kaf.txt` | 依序批次 ingest（整夜無人值守用） |
-| `pnpm test` | 唯一的 quality gate（node --test，覆蓋 `src/title.mjs`） |
+| `pnpm test` | 唯一的 quality gate（node --test，覆蓋 `src/title.mjs` 與 `generate-urls.mjs` 的過濾/白名單） |
 
 灌一批新歌的標準順序：`generate-urls` → `lint-titles`（看標題正規化有沒有走鐘）
 → `batch`。
@@ -86,11 +86,16 @@ https://youtu.be/abc12345678
   太差）。兩軌都沒有時 **lyrics 留 null，音訊分析照樣存**——那不算失敗。
 - **重跑要 `--force`**：video_id 已存在就直接跳過，安靜地什麼都不做。
 - **`generate-urls.mjs` 的預設輸出是 `urls-virtual_kaf.txt`**，不是 `urls.txt`。
-- **⚠️ `urls-virtual_kaf.txt` 是 gitignored，而 `generate-urls.mjs` 是全量覆蓋寫檔。**
-  檔案結尾的 4 支是手動補的 Live Ver.（`NDOJZSG9SPU` / `g8NbvGE8w6s` /
-  `9BPNC-SkOd8` / `GMK3nurbnWc`），它們**不通過 `shouldSkip()` 的 live 過濾**——
-  重跑一次掃描就永久消失，且無 git 可回溯。要重生成前先備份這幾行。
-  （保留理由：這 4 首在頻道上沒有 studio 版，刪掉等於該曲從資料庫消失。）
+- **`urls-virtual_kaf.txt` 是 gitignored 的純產物，`generate-urls.mjs` 才是真理源**
+  （全量覆蓋寫檔）。過濾的例外兩個方向都寫在該檔的兩份 id 清單裡：
+  - `KEEP_IDS`（4 支 Live Ver.）——頻道上沒有 studio 版，被 live 過濾刷掉
+    等於該曲從資料庫消失，所以強制保留。
+  - `DROP_IDS`（10 支御礼／新年／記念類告知影片）——長度與標題都通得過過濾
+    但不是歌，不擋的話每次重生成都會復活，然後被 batch 當歌灌進 DB。
+
+  **永遠不要手動編輯 txt**：手加的行下次重生成就沒了，手刪的行下次重生成會
+  回來。要增減一律改 `KEEP_IDS` / `DROP_IDS`，改完 `pnpm test` 會檢查兩份
+  清單不重疊。
 - **同一支影片有兩個標題**：yt-dlp 掃頻道（`--flat-playlist`）拿到的是英文標題，
   單片 `fetchMetadata` 拿到的是日文標題（YouTube 多語言標題功能）。入庫的是日文那個。
   拿頻道清單跟 DB 對帳時會對不起來——2026-07-20 實例：頻道顯示
