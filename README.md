@@ -34,8 +34,10 @@ node analyzer.mjs --url "<youtube-url>" --dry-run   # 單曲試跑，不寫 DB
 | `node batch.mjs urls-virtual_kaf.txt` | 依序批次 ingest（整夜無人值守用） |
 | `pnpm test` | 唯一的 quality gate（node --test，覆蓋 `src/title.mjs` 與 `generate-urls.mjs` 的過濾/白名單） |
 
-灌一批新歌的標準順序：`generate-urls` → `lint-titles`（看標題正規化有沒有走鐘）
-→ `batch`。
+花譜出新歌時的標準順序：`generate-urls` → `lint-titles`（看標題正規化有沒有走鐘）
+→ `batch`。重生成是安全的（例外都在 `KEEP_IDS` / `DROP_IDS`，不會弄丟或復活），
+不用先備份；`batch` 對已入庫的 video_id 會自動跳過，所以直接餵整份清單，只有
+新片會真的處理。
 
 ## 🎛️ batch 的限流參數（唯二要決定的東西）
 

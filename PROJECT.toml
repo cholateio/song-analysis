@@ -4,7 +4,7 @@
 name = "song-analysis"
 status = "idle"            # active | mvp | idle | done | paused | abandoned
 status_note = "ingest 完成,曲庫已同步至頻道最新;無主動開發,有新片再跑"
-updated = 2026-07-20       # 最後一次人工確認本檔內容的日期
+updated = 2026-07-25       # 最後一次人工確認本檔內容的日期
 
 [commands]                 # key = 用途短名;value = 可直接複製執行的指令
 # 批次/掃頻道/lint 是餵資料的內部步驟,不是「用它」的入口,見 README
