@@ -35,9 +35,7 @@
 - `src/title.mjs`（+ .test.mjs）— 花譜曲名正規化（前端 A-Z 索引用）
 - `supabase-schema.sql` — DB DDL
 - `docs/reference/` — 給前端的交接文件（`data-contracts.md`＝資料格式權威來源、
-  `clock-analysis-handover.md`）
-- `docs/plans/lip-sync-pipeline.md` — 唇形同步三階段計畫，**尚未實作**
-- `docs/specs/` — spec 入口（目前空）
+  `clock-analysis-handover.md`＝clock 移植的 why + gotchas）
 
 ## Project-specific constraints（禁區與硬規則）
 

@@ -413,7 +413,7 @@ Total file size: `8 + frameCount * 128` bytes.
   τ=0.8 EMA; **do not apply additional smoothing** on the client — it will
   feel laggy.
 
-- **No `bass` field.** The live virtual-music-clock WebSocket payload carries
+- **No `bass` field.** The live kaf-observatory WebSocket payload carries
   `bass = mean(dataArray[0..4])`; offline we omit it because it is trivially
   derivable. Use:
   ```js
@@ -540,10 +540,9 @@ Lyrics (`lyrics_jp`, `lyrics_tw`) are not frame-indexed; they carry their own
   rule); old rows have the field missing until reprocessed.
 - **v1**: original schema with all constants inlined per song.
 
-Planned future versions (see [lip-sync-pipeline.md](../plans/lip-sync-pipeline.md)) will add
-isolated-vocal-derived fields to the analysis frame — those will extend the
-analysis frame size and bump both the binary version byte and
-`schemaVersion`.
+Any future version that adds fields to the analysis frame (e.g.
+isolated-vocal-derived features) must extend the analysis frame size and bump
+both the binary version byte and `schemaVersion` together.
 
 ---
 

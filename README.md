@@ -112,9 +112,7 @@ https://youtu.be/abc12345678
 |------|------|
 | `CLAUDE.md` | AI 協作規則 + 本專案事實（stack / file layout / constraints） |
 | `docs/reference/data-contracts.md` | `Songs` 表 + binary blob 的**權威格式規格** |
-| `docs/reference/clock-analysis-handover.md` | clock analysis 離線移植的交接說明 |
-| `docs/plans/lip-sync-pipeline.md` | 唇形同步三階段計畫，**尚未實作**（下一步） |
-| `docs/specs/` | spec 入口（目前空） |
+| `docs/reference/clock-analysis-handover.md` | clock analysis 離線移植的交接說明（why + gotchas；格式規格在 data-contracts） |
 | `supabase-schema.sql` | DB DDL |
 
 ## 🔗 相關 repo
