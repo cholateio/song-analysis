@@ -2,9 +2,9 @@
 # user-owned:kit 永不覆蓋。狀態/指令/付費服務改變時同步本檔,並更新 updated。
 
 name = "song-analysis"
-status = "idle"            # active | mvp | idle | done | paused | abandoned
-status_note = "ingest 完成,曲庫已同步至頻道最新;無主動開發,有新片再跑"
-updated = 2026-07-25       # 最後一次人工確認本檔內容的日期
+status = "done"            # active | mvp | idle | done | paused | abandoned
+status_note = "pipeline 與曲庫完成並交付前端 kaf-observatory;有新片再跑 single 指令補件"
+updated = 2026-07-28       # 最後一次人工確認本檔內容的日期
 
 [commands]                 # key = 用途短名;value = 可直接複製執行的指令
 # 批次/掃頻道/lint 是餵資料的內部步驟,不是「用它」的入口,見 README
@@ -13,5 +13,5 @@ single = "node analyzer.mjs --url \"<youtube-url>\" [--genre <tag>] [--force] [-
 [[paid]]
 service = "Supabase"   # Postgres + Storage
 billing = "free-tier"      # user 2026-07-11 確認未付費
-monthly_est = "$0"
+monthly_est = "US$0/月"
 cancel = "刪除 Supabase 專案,或從 .env 移除 SUPABASE_URL / SUPABASE_SERVICE_KEY 停用寫入"
